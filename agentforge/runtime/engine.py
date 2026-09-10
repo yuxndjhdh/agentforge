@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
+import json
 import os
 import threading
 import time
@@ -23,7 +25,7 @@ from .models import (
     Verification,
     VerificationStatus,
 )
-from .store import RuntimeStore
+from .store import CheckpointSchemaError, RuntimeStore
 
 
 class RunCancelled(RuntimeError):
@@ -32,6 +34,10 @@ class RunCancelled(RuntimeError):
 
 class RunTimedOut(RunCancelled):
     """Raised when the runtime deadline elapses."""
+
+
+class ToolCallReplayError(RuntimeError):
+    """A previous tool call is incomplete or failed and replay was not allowed."""
 
 
 @dataclass
@@ -43,9 +49,13 @@ class RuntimeContext:
     trace_steps: list[dict[str, Any]] = field(default_factory=list)
     active_tool_calls: dict[str, ToolCall] = field(default_factory=dict)
     state: dict[str, Any] = field(default_factory=dict)
+    restored_state: dict[str, Any] = field(default_factory=dict)
     timed_out: bool = False
+    closed: bool = False
 
     def check_cancelled(self) -> None:
+        if self.closed:
+            raise RunCancelled("run context is closed")
         latest = self.runtime.store.get_run(self.run.id)
         if self.timed_out:
             raise RunTimedOut("run exceeded max duration")
@@ -54,8 +64,16 @@ class RuntimeContext:
 
     def checkpoint(self, state: dict[str, Any], *, complete: bool = False) -> Checkpoint:
         self.check_cancelled()
+        if not isinstance(state, dict):
+            raise CheckpointSchemaError("checkpoint state must be an object")
         self.state = dict(state)
-        sequence = self.runtime.store.next_sequence(self.run.id)
+        runtime_state = self.state.get("_runtime")
+        if not isinstance(runtime_state, dict):
+            runtime_state = {}
+        runtime_state = dict(runtime_state)
+        runtime_state["completed_tool_calls"] = self._completed_tool_observations()
+        self.state["_runtime"] = runtime_state
+        sequence = self.runtime.store.next_checkpoint_sequence(self.run.id)
         checkpoint = Checkpoint.create(
             self.run.id,
             self.attempt.id,
@@ -71,6 +89,127 @@ class RuntimeContext:
             payload={"sequence": sequence, "complete": complete},
         )
         return checkpoint
+
+    def call_tool(
+        self,
+        name: str,
+        function: Callable[..., Any],
+        *args: Any,
+        idempotency_key: str | None = None,
+        arguments: dict[str, Any] | None = None,
+        retry_failed: bool = False,
+        **kwargs: Any,
+    ) -> Any:
+        """Execute a side-effecting tool once across attempts.
+
+        A caller should provide a semantic ``idempotency_key`` for operations
+        whose arguments are not sufficient to identify the side effect. The
+        key is scoped to the run and intentionally does not include the
+        attempt ID, so a resumed run can replay a completed call safely.
+        """
+        self.check_cancelled()
+        key = self._tool_key(name, idempotency_key, args, kwargs)
+        previous = self.runtime.store.get_tool_call_by_key(key)
+        if previous is not None:
+            if previous.status == StepStatus.SUCCEEDED:
+                observation = previous.observation or ""
+                self._remember_tool_observation(key, observation)
+                self.runtime.emit(
+                    self.run.id,
+                    "tool_call.replayed",
+                    attempt_id=self.attempt.id,
+                    payload={"idempotency_key": key, "tool_call_id": previous.id},
+                )
+                return observation
+            if not retry_failed:
+                raise ToolCallReplayError(
+                    f"tool call {key} is {previous.status.value}; explicit retry is required"
+                )
+            key = self.runtime.store.next_tool_retry_key(key)
+
+        call = ToolCall.create(
+            self.run.id,
+            self.attempt.id,
+            name,
+            arguments=arguments or {"args": list(args), "kwargs": kwargs},
+            idempotency_key=key,
+        )
+        self.runtime.store.append_tool_call(call)
+        self.runtime.emit(
+            self.run.id,
+            "tool_call.started",
+            attempt_id=self.attempt.id,
+            payload=call.to_record(),
+        )
+        try:
+            result = function(*args, **kwargs)
+        except Exception as exc:
+            call.status = StepStatus.FAILED
+            call.finished_at = time.time()
+            call.error = f"{type(exc).__name__}: {exc}"
+            self.runtime.store.update_tool_call(
+                call.id,
+                status=call.status,
+                finished_at=call.finished_at,
+                error=call.error,
+            )
+            self.runtime.emit(
+                self.run.id,
+                "tool_call.completed",
+                attempt_id=self.attempt.id,
+                payload=call.to_record(),
+            )
+            raise
+        observation = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
+        call.status = StepStatus.SUCCEEDED
+        call.finished_at = time.time()
+        call.observation = observation
+        self.runtime.store.update_tool_call(
+            call.id,
+            status=call.status,
+            finished_at=call.finished_at,
+            observation=observation,
+        )
+        self._remember_tool_observation(key, observation)
+        self.runtime.emit(
+            self.run.id,
+            "tool_call.completed",
+            attempt_id=self.attempt.id,
+            payload=call.to_record(),
+        )
+        return result
+
+    def _completed_tool_observations(self) -> dict[str, str]:
+        observations: dict[str, str] = {}
+        for call in self.runtime.store.list_tool_calls(self.run.id):
+            if call.status == StepStatus.SUCCEEDED and call.idempotency_key and call.observation is not None:
+                observations[call.idempotency_key] = call.observation
+        return observations
+
+    def _remember_tool_observation(self, key: str, observation: str) -> None:
+        runtime_state = self.state.get("_runtime")
+        if not isinstance(runtime_state, dict):
+            runtime_state = {}
+        completed = runtime_state.get("completed_tool_calls")
+        if not isinstance(completed, dict):
+            completed = {}
+        completed = dict(completed)
+        completed[key] = observation
+        runtime_state = dict(runtime_state)
+        runtime_state["completed_tool_calls"] = completed
+        self.state["_runtime"] = runtime_state
+
+    def _tool_key(
+        self,
+        name: str,
+        explicit_key: str | None,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> str:
+        identity = explicit_key if explicit_key is not None else {"args": args, "kwargs": kwargs}
+        encoded = json.dumps(identity, sort_keys=True, ensure_ascii=False, default=str)
+        digest = hashlib.sha256(f"{name}\0{encoded}".encode("utf-8")).hexdigest()
+        return f"run:{self.run.id}:tool:{name}:{digest}"
 
     def step(
         self,
@@ -112,6 +251,7 @@ class RuntimeContext:
         checks: list[dict[str, Any]] | None = None,
         feedback: str = "",
     ) -> Verification:
+        self.check_cancelled()
         verification = Verification.create(
             self.run.id,
             self.attempt.id,
@@ -230,6 +370,12 @@ class AgentRuntime:
         elif run.status == RunStatus.CANCELLED and not resume:
             raise ValueError(f"run {run.id} is cancelled; pass resume=True to continue")
 
+        restored_state: dict[str, Any] = {}
+        if resume:
+            checkpoint = self.store.latest_checkpoint(run.id)
+            if checkpoint is not None:
+                restored_state = dict(checkpoint.state)
+
         attempts = self.store.list_attempts(run.id)
         attempt = Attempt.create(run.id, len(attempts))
         now = time.time()
@@ -241,7 +387,18 @@ class AgentRuntime:
         self.emit(run.id, "attempt.started", attempt_id=attempt.id, payload=attempt.to_record())
 
         cancel_event = threading.Event()
-        context = RuntimeContext(self, run, attempt, cancel_event, trace_steps=trace_steps or [])
+        restored_trace_steps = restored_state.get("trace_steps")
+        if trace_steps is None and isinstance(restored_trace_steps, list):
+            trace_steps = [item for item in restored_trace_steps if isinstance(item, dict)]
+        context = RuntimeContext(
+            self,
+            run,
+            attempt,
+            cancel_event,
+            trace_steps=list(trace_steps or []),
+            state=restored_state,
+            restored_state=dict(restored_state),
+        )
         with self._lock:
             self._active[run.id] = (agent, cancel_event, context)
         timer: threading.Timer | None = None
@@ -253,7 +410,38 @@ class AgentRuntime:
         final_status = RunStatus.SUCCEEDED
         error_text: str | None = None
         try:
-            answer = str(executor(context))
+            outcome: dict[str, Any] = {}
+            executor_done = threading.Event()
+
+            def invoke_executor() -> None:
+                try:
+                    outcome["answer"] = executor(context)
+                except BaseException as exc:  # worker must always release the monitor
+                    outcome["error"] = exc
+                finally:
+                    executor_done.set()
+
+            worker = threading.Thread(
+                target=invoke_executor,
+                name=f"agentforge-run-{run.id}",
+                daemon=True,
+            )
+            worker.start()
+            while not executor_done.wait(0.05):
+                latest = self.store.get_run(run.id)
+                if context.timed_out:
+                    context.closed = True
+                    raise RunTimedOut("run exceeded max duration")
+                if cancel_event.is_set() or (latest and latest.cancel_requested):
+                    context.closed = True
+                    raise RunCancelled("run cancelled")
+
+            worker_error = outcome.get("error")
+            if worker_error is not None:
+                if isinstance(worker_error, Exception):
+                    raise worker_error
+                raise RuntimeError(f"executor stopped with {type(worker_error).__name__}")
+            answer = str(outcome.get("answer", ""))
             context.check_cancelled()
             context.checkpoint({"answer": answer, "trace_steps": context.trace_steps}, complete=True)
         except RunTimedOut as exc:
@@ -277,19 +465,19 @@ class AgentRuntime:
                 timer.cancel()
             with self._lock:
                 self._active.pop(run.id, None)
-            finished = time.time()
+            finished_at = time.time()
             attempt.status = {
                 RunStatus.SUCCEEDED: AttemptStatus.SUCCEEDED,
                 RunStatus.CANCELLED: AttemptStatus.CANCELLED,
                 RunStatus.FAILED: AttemptStatus.FAILED,
             }[final_status]
-            attempt.finished_at = finished
+            attempt.finished_at = finished_at
             attempt.answer = answer or None
             attempt.error = error_text
             self.store.update_attempt(
                 attempt.id,
                 status=attempt.status,
-                finished_at=finished,
+                finished_at=finished_at,
                 answer=attempt.answer,
                 error=attempt.error,
             )
@@ -444,18 +632,47 @@ class AgentRuntime:
             if agent is not None and hasattr(agent, "interrupt_switch"):
                 agent.interrupt_switch = True
 
-    def _handle_tool_event(self, context: RuntimeContext, event: dict[str, Any]) -> None:
+    def _handle_tool_event(self, context: RuntimeContext, event: dict[str, Any]) -> dict[str, Any] | None:
+        if context.closed:
+            return None
         phase = event.get("phase")
+        if phase == "policy":
+            self.emit(
+                context.run.id,
+                "policy.decision",
+                attempt_id=context.attempt.id,
+                payload={key: value for key, value in event.items() if key != "phase"},
+            )
+            return None
         call_id = str(event.get("call_id", ""))
         if not call_id:
-            return
+            return None
         if phase == "started":
+            name = str(event.get("name", "unknown"))
+            provided_key = str(event.get("idempotency_key", ""))
+            key = f"run:{context.run.id}:event:{provided_key or name}"
+            previous = self.store.get_tool_call_by_key(key)
+            if previous is not None:
+                if previous.status == StepStatus.SUCCEEDED:
+                    self.emit(
+                        context.run.id,
+                        "tool_call.replayed",
+                        attempt_id=context.attempt.id,
+                        payload={"idempotency_key": key, "tool_call_id": previous.id},
+                    )
+                    return {"replay": True, "observation": previous.observation or ""}
+                if previous.status == StepStatus.RUNNING:
+                    return {
+                        "reject": True,
+                        "observation": "Error: previous tool call is incomplete; replay was refused",
+                    }
+                key = self.store.next_tool_retry_key(key)
             call = ToolCall.create(
                 context.run.id,
                 context.attempt.id,
-                str(event.get("name", "unknown")),
+                name,
                 arguments=event.get("arguments") or {},
-                idempotency_key=f"{context.attempt.id}:{call_id}",
+                idempotency_key=key,
             )
             context.active_tool_calls[call_id] = call
             self.store.append_tool_call(call)
@@ -465,19 +682,12 @@ class AgentRuntime:
                 attempt_id=context.attempt.id,
                 payload=call.to_record(),
             )
-            return
+            return None
         if phase != "completed":
-            if phase == "policy":
-                self.emit(
-                    context.run.id,
-                    "policy.decision",
-                    attempt_id=context.attempt.id,
-                    payload={key: value for key, value in event.items() if key != "phase"},
-                )
-            return
+            return None
         completed_call = context.active_tool_calls.get(call_id)
         if completed_call is None:
-            return
+            return None
         del context.active_tool_calls[call_id]
         error = event.get("error")
         completed_call.status = StepStatus.FAILED if error else StepStatus.SUCCEEDED
@@ -497,6 +707,7 @@ class AgentRuntime:
             attempt_id=context.attempt.id,
             payload=completed_call.to_record(),
         )
+        return None
 
     def _bind_agent_events(self, agent: Any, context: RuntimeContext) -> None:
         """Rebind instrumented tools when one agent handles multiple runs."""
@@ -530,6 +741,8 @@ class AgentRuntime:
                 metadata={"source": "smolagents", "raw": raw},
             )
             try:
+                if context.closed:
+                    continue
                 self.store.append_step(step)
             except Exception:
                 # A malformed third-party memory item should not hide the

@@ -1,0 +1,174 @@
+{
+  "schema_version": 2,
+  "run_id": "run_recovery_example",
+  "workdir": "docs/examples/recovery_workspace",
+  "task": "resume after interruption",
+  "model": "",
+  "status": "succeeded",
+  "attempt_id": "attempt_7bd937848a6a41cbb908aeebd7ff0a1b",
+  "steps": [
+    {
+      "kind": "action",
+      "step": 1,
+      "observation": "write completed"
+    },
+    {
+      "kind": "action",
+      "step": 3,
+      "observation": "resume completed"
+    }
+  ],
+  "compression": [],
+  "events": [
+    {
+      "sequence": 1,
+      "type": "run.created",
+      "attempt_id": null,
+      "payload": {
+        "id": "run_recovery_example",
+        "task": "resume after interruption",
+        "workdir": "docs/examples/recovery_workspace",
+        "status": "pending",
+        "created_at": 1789014616.4565468,
+        "updated_at": 1789014616.4565485,
+        "model": "",
+        "project_id": "default",
+        "user_id": "default",
+        "max_steps": 20,
+        "max_duration": null,
+        "attempt_id": null,
+        "error": null,
+        "answer": null,
+        "cancel_requested": false,
+        "metadata": {}
+      }
+    },
+    {
+      "sequence": 2,
+      "type": "run.started",
+      "attempt_id": "attempt_63a8c7f6496e41e3a19f35322fa3f359",
+      "payload": {
+        "resume": false
+      }
+    },
+    {
+      "sequence": 3,
+      "type": "attempt.started",
+      "attempt_id": "attempt_63a8c7f6496e41e3a19f35322fa3f359",
+      "payload": {
+        "id": "attempt_63a8c7f6496e41e3a19f35322fa3f359",
+        "run_id": "run_recovery_example",
+        "number": 0,
+        "status": "running",
+        "created_at": 1789014616.461457,
+        "started_at": 1789014616.4614677,
+        "finished_at": null,
+        "checkpoint_seq": 0,
+        "error": null,
+        "answer": null,
+        "metadata": {}
+      }
+    },
+    {
+      "sequence": 4,
+      "type": "step.completed",
+      "attempt_id": "attempt_63a8c7f6496e41e3a19f35322fa3f359",
+      "payload": {
+        "id": "step_9c1e7bccc29344618f49557227467fcb",
+        "run_id": "run_recovery_example",
+        "attempt_id": "attempt_63a8c7f6496e41e3a19f35322fa3f359",
+        "number": 1,
+        "kind": "action",
+        "status": "succeeded",
+        "started_at": 1789014616.4892697,
+        "finished_at": 1789014616.48923,
+        "input": null,
+        "output": "write completed",
+        "error": null,
+        "metadata": {}
+      }
+    },
+    {
+      "sequence": 5,
+      "type": "checkpoint.created",
+      "attempt_id": "attempt_63a8c7f6496e41e3a19f35322fa3f359",
+      "payload": {
+        "sequence": 1,
+        "complete": true
+      }
+    },
+    {
+      "sequence": 6,
+      "type": "run.failed",
+      "attempt_id": "attempt_63a8c7f6496e41e3a19f35322fa3f359",
+      "payload": {
+        "answer": "",
+        "error": "RuntimeError: simulated process interruption"
+      }
+    },
+    {
+      "sequence": 7,
+      "type": "run.started",
+      "attempt_id": "attempt_7bd937848a6a41cbb908aeebd7ff0a1b",
+      "payload": {
+        "resume": true
+      }
+    },
+    {
+      "sequence": 8,
+      "type": "attempt.started",
+      "attempt_id": "attempt_7bd937848a6a41cbb908aeebd7ff0a1b",
+      "payload": {
+        "id": "attempt_7bd937848a6a41cbb908aeebd7ff0a1b",
+        "run_id": "run_recovery_example",
+        "number": 1,
+        "status": "running",
+        "created_at": 1789014616.554952,
+        "started_at": 1789014616.554954,
+        "finished_at": null,
+        "checkpoint_seq": 0,
+        "error": null,
+        "answer": null,
+        "metadata": {}
+      }
+    },
+    {
+      "sequence": 9,
+      "type": "step.completed",
+      "attempt_id": "attempt_7bd937848a6a41cbb908aeebd7ff0a1b",
+      "payload": {
+        "id": "step_1eefb6e808dd4b74a98b7dcebbd83a02",
+        "run_id": "run_recovery_example",
+        "attempt_id": "attempt_7bd937848a6a41cbb908aeebd7ff0a1b",
+        "number": 3,
+        "kind": "action",
+        "status": "succeeded",
+        "started_at": 1789014616.5723634,
+        "finished_at": 1789014616.5723326,
+        "input": null,
+        "output": "resume completed",
+        "error": null,
+        "metadata": {}
+      }
+    },
+    {
+      "sequence": 10,
+      "type": "checkpoint.created",
+      "attempt_id": "attempt_7bd937848a6a41cbb908aeebd7ff0a1b",
+      "payload": {
+        "sequence": 2,
+        "complete": true
+      }
+    },
+    {
+      "sequence": 11,
+      "type": "run.completed",
+      "attempt_id": "attempt_7bd937848a6a41cbb908aeebd7ff0a1b",
+      "payload": {
+        "answer": "recovered",
+        "error": null
+      }
+    }
+  ],
+  "generated_by": "AgentRuntime recovery example"
+}

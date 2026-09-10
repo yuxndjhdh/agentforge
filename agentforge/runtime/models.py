@@ -13,6 +13,8 @@ from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any
 
+CHECKPOINT_SCHEMA_VERSION = 1
+
 
 class RunStatus(StrEnum):
     PENDING = "pending"
@@ -211,6 +213,7 @@ class Checkpoint:
     created_at: float
     state: dict[str, Any]
     complete: bool = False
+    schema_version: int = CHECKPOINT_SCHEMA_VERSION
 
     @classmethod
     def create(
@@ -221,8 +224,9 @@ class Checkpoint:
         state: dict[str, Any],
         *,
         complete: bool = False,
+        schema_version: int = CHECKPOINT_SCHEMA_VERSION,
     ) -> "Checkpoint":
-        return cls(run_id, attempt_id, sequence, utc_timestamp(), state, complete)
+        return cls(run_id, attempt_id, sequence, utc_timestamp(), state, complete, schema_version)
 
     def to_record(self) -> dict[str, Any]:
         return asdict(self)

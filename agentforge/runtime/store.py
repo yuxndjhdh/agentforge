@@ -7,10 +7,12 @@ import os
 import sqlite3
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any, Iterable
 
 from .models import (
+    CHECKPOINT_SCHEMA_VERSION,
     Attempt,
     AttemptStatus,
     Checkpoint,
@@ -20,6 +22,7 @@ from .models import (
     Step,
     ToolCall,
     Verification,
+    stable_id,
 )
 
 SCHEMA = """
@@ -103,11 +106,16 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     sequence INTEGER NOT NULL,
     created_at REAL NOT NULL,
     state_json TEXT NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 1,
     complete INTEGER NOT NULL DEFAULT 0,
     is_event INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(run_id, sequence)
 );
 CREATE TABLE IF NOT EXISTS event_counters (
+    run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+    next_sequence INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS checkpoint_counters (
     run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
     next_sequence INTEGER NOT NULL
 );
@@ -196,6 +204,18 @@ class RuntimeStore:
         self._connection.execute("PRAGMA journal_mode=WAL")
         self._connection.execute("PRAGMA synchronous=FULL")
         self._connection.executescript(SCHEMA)
+        self._ensure_checkpoint_schema()
+
+    def _ensure_checkpoint_schema(self) -> None:
+        """Migrate state databases created before checkpoint schemas existed."""
+        columns = {
+            str(row["name"])
+            for row in self._connection.execute("PRAGMA table_info(checkpoints)").fetchall()
+        }
+        if "schema_version" not in columns:
+            self._connection.execute(
+                "ALTER TABLE checkpoints ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1"
+            )
 
     def close(self) -> None:
         with self._lock:
@@ -330,7 +350,7 @@ class RuntimeStore:
         record = call.to_record()
         with self._lock:
             self._connection.execute(
-                """INSERT OR REPLACE INTO tool_calls
+                """INSERT INTO tool_calls
                 (id, run_id, attempt_id, step_id, name, arguments_json, status,
                  started_at, finished_at, observation, error, idempotency_key)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -344,8 +364,18 @@ class RuntimeStore:
         return call
 
     def get_tool_call_by_key(self, key: str) -> ToolCall | None:
-        row = self._one("SELECT * FROM tool_calls WHERE idempotency_key = ?", (key,))
+        row = self._one(
+            """SELECT * FROM tool_calls
+               WHERE idempotency_key = ? OR idempotency_key LIKE ?
+               ORDER BY CASE WHEN idempotency_key = ? THEN 0 ELSE 1 END, started_at DESC
+               LIMIT 1""",
+            (key, f"{key}:retry:%", key),
+        )
         return _tool_call_from_row(row) if row else None
+
+    def next_tool_retry_key(self, key: str) -> str:
+        """Return a unique key that remains discoverable through the base key."""
+        return f"{key}:retry:{stable_id('toolretry')}"
 
     def update_tool_call(self, call_id: str, **changes: Any) -> ToolCall | None:
         allowed = {"step_id", "status", "finished_at", "observation", "error"}
@@ -390,16 +420,28 @@ class RuntimeStore:
         return [_verification_from_row(row) for row in rows]
 
     def save_checkpoint(self, checkpoint: Checkpoint) -> Checkpoint:
+        if checkpoint.schema_version != CHECKPOINT_SCHEMA_VERSION:
+            raise CheckpointSchemaError(
+                f"unsupported checkpoint schema version: {checkpoint.schema_version}"
+            )
+        if not isinstance(checkpoint.state, dict):
+            raise CheckpointSchemaError("checkpoint state must be an object")
         record = checkpoint.to_record()
         with self._lock:
             self._connection.execute(
                 """INSERT OR REPLACE INTO checkpoints
-                (run_id, attempt_id, sequence, created_at, state_json, complete, is_event)
-                VALUES (?, ?, ?, ?, ?, ?, 0)""",
+                (run_id, attempt_id, sequence, created_at, state_json, schema_version, complete, is_event)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0)""",
                 (
                     record["run_id"], record["attempt_id"], record["sequence"], record["created_at"],
-                    _dump(record["state"]), int(record["complete"]),
+                    _dump(record["state"]), record["schema_version"], int(record["complete"]),
                 ),
+            )
+            self._connection.execute(
+                """INSERT INTO checkpoint_counters(run_id, next_sequence) VALUES (?, ?)
+                   ON CONFLICT(run_id) DO UPDATE SET next_sequence =
+                   MAX(checkpoint_counters.next_sequence, excluded.next_sequence)""",
+                (checkpoint.run_id, checkpoint.sequence + 1),
             )
             if checkpoint.attempt_id is not None:
                 self.update_attempt(checkpoint.attempt_id, checkpoint_seq=checkpoint.sequence)
@@ -410,16 +452,33 @@ class RuntimeStore:
         params: list[Any] = [run_id]
         if complete_only:
             query += " AND complete = 1"
-        query += " ORDER BY sequence DESC LIMIT 1"
-        row = self._one(query, params)
-        return _checkpoint_from_row(row) if row else None
+        query += " ORDER BY sequence DESC"
+        rows = self._connection.execute(query, tuple(params)).fetchall()
+        for row in rows:
+            try:
+                return _checkpoint_from_row(row)
+            except CheckpointCorruptionError:
+                continue
+        return None
+
+    def next_checkpoint_sequence(self, run_id: str) -> int:
+        with self._lock:
+            existing = self._connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 AS next FROM checkpoints WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            self._connection.execute(
+                "INSERT OR IGNORE INTO checkpoint_counters(run_id, next_sequence) VALUES (?, ?)",
+                (run_id, int(existing["next"]) if existing else 1),
+            )
+            row = self._connection.execute(
+                "SELECT next_sequence FROM checkpoint_counters WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return int(row["next_sequence"]) if row else 1
 
     def next_sequence(self, run_id: str) -> int:
-        row = self._one(
-            "SELECT COALESCE(MAX(sequence), 0) + 1 AS next FROM checkpoints WHERE run_id = ?",
-            (run_id,),
-        )
-        return int(row["next"]) if row else 1
+        """Backward-compatible alias for checkpoint sequence allocation."""
+        return self.next_checkpoint_sequence(run_id)
 
     def append_event(
         self,
@@ -453,6 +512,47 @@ class RuntimeStore:
                 (sequence + 1, run_id),
             )
         return record
+
+    def recover_stale_runs(self) -> list[Run]:
+        """Mark runs left active by a dead process as failed but resumable."""
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM runs WHERE status IN (?, ?) ORDER BY created_at",
+                (RunStatus.RUNNING.value, RunStatus.VERIFYING.value),
+            ).fetchall()
+        recovered: list[Run] = []
+        for row in rows:
+            run = _run_from_row(row)
+            checkpoint = self.latest_checkpoint(run.id)
+            metadata = dict(run.metadata)
+            metadata.update({"resumable": True, "recovered_from_status": run.status.value})
+            recovery_error = "runtime process stopped before completion; resume is available"
+            if run.attempt_id is not None:
+                self.update_attempt(
+                    run.attempt_id,
+                    status=AttemptStatus.FAILED,
+                    finished_at=time.time(),
+                    error=recovery_error,
+                )
+            updated = self.update_run(
+                run.id,
+                status=RunStatus.FAILED,
+                error=recovery_error,
+                metadata=metadata,
+            )
+            if updated is not None:
+                self.append_event(
+                    run.id,
+                    "run.recovered",
+                    attempt_id=run.attempt_id,
+                    payload={
+                        "previous_status": run.status.value,
+                        "checkpoint_sequence": checkpoint.sequence if checkpoint else None,
+                        "resumable": True,
+                    },
+                )
+                recovered.append(updated)
+        return recovered
 
     def _one(self, query: str, params: Iterable[Any]) -> sqlite3.Row | None:
         with self._lock:
@@ -530,7 +630,31 @@ def _verification_from_row(row: sqlite3.Row) -> Verification:
 
 
 def _checkpoint_from_row(row: sqlite3.Row) -> Checkpoint:
+    schema_version = int(row["schema_version"])
+    if schema_version != CHECKPOINT_SCHEMA_VERSION:
+        raise CheckpointSchemaError(f"unsupported checkpoint schema version: {schema_version}")
+    state = _load_strict(row["state_json"])
+    if not isinstance(state, dict):
+        raise CheckpointCorruptionError("checkpoint state is not an object")
     return Checkpoint(
         run_id=row["run_id"], attempt_id=row["attempt_id"], sequence=row["sequence"],
-        created_at=row["created_at"], state=_load(row["state_json"], {}), complete=bool(row["complete"]),
+        created_at=row["created_at"], state=state, schema_version=schema_version,
+        complete=bool(row["complete"]),
     )
+
+
+class CheckpointCorruptionError(ValueError):
+    """A checkpoint row cannot be decoded and should be skipped during recovery."""
+
+
+class CheckpointSchemaError(ValueError):
+    """A checkpoint was written by an incompatible runtime version."""
+
+
+def _load_strict(value: str | None) -> Any:
+    if value is None:
+        raise CheckpointCorruptionError("checkpoint state is missing")
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError) as exc:
+        raise CheckpointCorruptionError("checkpoint state is invalid JSON") from exc

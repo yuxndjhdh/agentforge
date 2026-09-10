@@ -1,6 +1,13 @@
 """Public runtime API."""
 
-from .engine import AgentRuntime, RunCancelled, RuntimeContext, RunTimedOut, RuntimeResult
+from .engine import (
+    AgentRuntime,
+    RunCancelled,
+    RuntimeContext,
+    RunTimedOut,
+    RuntimeResult,
+    ToolCallReplayError,
+)
 from .models import (
     Attempt,
     AttemptStatus,
@@ -15,12 +22,18 @@ from .models import (
     VerificationStatus,
     stable_id,
 )
-from .store import JsonlEventStore, RuntimeStore
+from .store import (
+    CheckpointCorruptionError,
+    CheckpointSchemaError,
+    JsonlEventStore,
+    RuntimeStore,
+)
 
 __all__ = [
     "AgentRuntime",
     "RunCancelled",
     "RunTimedOut",
+    "ToolCallReplayError",
     "RuntimeContext",
     "RuntimeResult",
     "Attempt",
@@ -37,4 +50,6 @@ __all__ = [
     "stable_id",
     "JsonlEventStore",
     "RuntimeStore",
+    "CheckpointCorruptionError",
+    "CheckpointSchemaError",
 ]

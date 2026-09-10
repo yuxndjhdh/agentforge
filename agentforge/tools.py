@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import tempfile
@@ -287,14 +289,24 @@ class _InstrumentedTool(Tool):
         arguments = kwargs.copy()
         if args:
             arguments["_args"] = list(args)
-        self._emit(
+        identity = json.dumps(
+            {"name": self.name, "arguments": arguments},
+            sort_keys=True,
+            ensure_ascii=False,
+            default=str,
+        )
+        idempotency_key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        decision = self._emit(
             {
                 "phase": "started",
                 "call_id": call_id,
                 "name": self.name,
                 "arguments": arguments,
+                "idempotency_key": idempotency_key,
             }
         )
+        if isinstance(decision, dict) and (decision.get("replay") or decision.get("reject")):
+            return str(decision.get("observation", ""))
         started = time.monotonic()
         try:
             result = self.inner.forward(*args, **kwargs)
@@ -305,6 +317,7 @@ class _InstrumentedTool(Tool):
                     "call_id": call_id,
                     "name": self.name,
                     "arguments": arguments,
+                    "idempotency_key": idempotency_key,
                     "error": f"{type(exc).__name__}: {exc}",
                     "duration_ms": round((time.monotonic() - started) * 1000, 2),
                 }
@@ -316,18 +329,19 @@ class _InstrumentedTool(Tool):
                 "call_id": call_id,
                 "name": self.name,
                 "arguments": arguments,
+                "idempotency_key": idempotency_key,
                 "observation": str(result)[:4000],
                 "duration_ms": round((time.monotonic() - started) * 1000, 2),
             }
         )
         return result
 
-    def _emit(self, event: dict) -> None:
+    def _emit(self, event: dict):
         try:
-            self.event_sink(event)
+            return self.event_sink(event)
         except Exception:
             # Instrumentation must not change tool semantics.
-            pass
+            return None
 
 
 def all_code_tools(

@@ -57,11 +57,11 @@ T1、T2 是 T4 真实实验的前置条件。T4 的报告是 T6 发布和简历�
 
 ### T0-01 审核并提交现有 0.2.0 代码
 
-- [ ] 逐文件审核当前修改和新增文件，确认没有生成物、密钥或个人路径进入提交。
-- [ ] 删除或归档根目录与 `docs/` 中重复的计划/架构文档，只保留唯一来源。
-- [ ] 确认 `.agentforge/`、`runs/`、`.coverage`、缓存目录均被忽略。
-- [ ] 将现有改动按“runtime/sandbox”“benchmark/api”“docs/engineering”拆成可审查提交。
-- [ ] 提交后确认 `git status --short` 为空。
+- [x] 逐文件审核当前修改和新增文件，确认没有生成物、密钥或个人路径进入提交。
+- [x] 删除或归档根目录与 `docs/` 中重复的计划/架构文档，只保留唯一来源。
+- [x] 确认 `.agentforge/`、`runs/`、`.coverage`、缓存目录均被忽略。
+- [x] 将现有改动按“runtime/sandbox”“benchmark/api”“docs/engineering”拆成可审查提交。
+- [x] 提交后确认 `git status --short` 为空。
 
 验收命令：
 
@@ -72,6 +72,8 @@ git log --oneline -5
 
 完成证据：提交哈希记录在本节下方。
 
+完成提交：`fd83b3a`、`a60dff1`、`afe218f`。
+
 ---
 
 ## 5. T1：完成可恢复 Runtime
@@ -80,11 +82,11 @@ git log --oneline -5
 
 ### T1-01 恢复完整 checkpoint state
 
-- [ ] `RuntimeContext` 在 resume 时接收最新完整 checkpoint state。
-- [ ] executor 可以读取 cursor、已完成步骤、业务状态和恢复元数据。
-- [ ] checkpoint 增加 schema version，并对不兼容版本给出明确错误。
-- [ ] 区分“事件序号”和“checkpoint 序号”，避免相互覆盖或误读。
-- [ ] 不完整或损坏的最后一条 checkpoint 会回退到上一条完整记录。
+- [x] `RuntimeContext` 在 resume 时接收最新完整 checkpoint state。
+- [x] executor 可以读取 cursor、已完成步骤、业务状态和恢复元数据。
+- [x] checkpoint 增加 schema version，并对不兼容版本给出明确错误。
+- [x] 区分“事件序号”和“checkpoint 序号”，避免相互覆盖或误读。
+- [x] 不完整或损坏的最后一条 checkpoint 会回退到上一条完整记录。
 
 验收场景：
 
@@ -95,42 +97,42 @@ git log --oneline -5
 
 ### T1-02 实现工具调用幂等
 
-- [ ] 在工具执行前根据稳定 idempotency key 查询历史状态。
-- [ ] 已成功完成的工具调用直接返回保存的 observation。
-- [ ] 失败或未完成调用按显式策略决定重试或拒绝。
-- [ ] idempotency key 不依赖新的 attempt ID，否则恢复后无法命中旧调用。
-- [ ] 写文件等副作用工具增加重复执行回归测试。
+- [x] 在工具执行前根据稳定 idempotency key 查询历史状态。
+- [x] 已成功完成的工具调用直接返回保存的 observation。
+- [x] 失败或未完成调用按显式策略决定重试或拒绝。
+- [x] idempotency key 不依赖新的 attempt ID，否则恢复后无法命中旧调用。
+- [x] 写文件等副作用工具增加重复执行回归测试。
 
 验收标准：同一 checkpoint 恢复两次，已完成的写文件和命令调用都只发生一次。
 
 ### T1-03 强化取消与总超时
 
-- [ ] 取消普通 Python executor 时不依赖其主动轮询才能结束运行。
-- [ ] 取消 Agent 时同时终止正在运行的命令子进程树。
-- [ ] 总运行超时覆盖 LLM 请求、工具执行和 verify 阶段。
-- [ ] timeout 与 cancel 使用不同最终状态和错误类型。
-- [ ] 增加阻塞 executor、阻塞命令和慢 LLM 三类测试。
+- [x] 取消普通 Python executor 时不依赖其主动轮询才能结束运行。
+- [x] 取消 Agent 时同时终止正在运行的命令子进程树。
+- [x] 总运行超时覆盖 LLM 请求、工具执行和 verify 阶段。
+- [x] timeout 与 cancel 使用不同最终状态和错误类型。
+- [x] 增加阻塞 executor、阻塞命令和慢 LLM 三类测试。
 
 ### T1-04 启动恢复与僵尸运行处理
 
-- [ ] 服务启动时扫描 `running/verifying` 状态的遗留 run。
-- [ ] 根据 checkpoint 和恢复策略转为 resumable、failed 或重新入队。
-- [ ] 成功 run 重复提交保持幂等。
-- [ ] 恢复操作写入新的 attempt，并保留旧 attempt 历史。
+- [x] 服务启动时扫描 `running/verifying` 状态的遗留 run。
+- [x] 根据 checkpoint 和恢复策略转为 resumable、failed 或重新入队。
+- [x] 成功 run 重复提交保持幂等。
+- [x] 恢复操作写入新的 attempt，并保留旧 attempt 历史。
 
 ### T1-05 Runtime 集成测试
 
-- [ ] 新增真正关闭并重建 SQLite 连接的恢复测试。
-- [ ] 新增部分 JSONL 尾行损坏测试。
-- [ ] 新增重复 tool call 副作用测试。
-- [ ] 新增非协作 executor 取消测试。
-- [ ] 新增 run/attempt/step/verification 关联完整性测试。
+- [x] 新增真正关闭并重建 SQLite 连接的恢复测试。
+- [x] 新增部分 JSONL 尾行损坏测试。
+- [x] 新增重复 tool call 副作用测试。
+- [x] 新增非协作 executor 取消测试。
+- [x] 新增 run/attempt/step/verification 关联完整性测试。
 
 T1 完成门槛：
 
-- [ ] M2 的四条验收标准全部通过。
-- [ ] Runtime 核心模块覆盖率不低于 85%。
-- [ ] 生成一个真实中断后恢复的 trace 示例。
+- [x] M2 的四条验收标准全部通过。
+- [x] Runtime 核心模块覆盖率不低于 85%（当前专项覆盖率 92%）。
+- [x] 生成一个真实中断后恢复的 trace 示例（见 `docs/examples/runtime_recovery_trace.json`）。
 
 ---
 

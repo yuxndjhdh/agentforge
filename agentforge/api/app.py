@@ -51,6 +51,7 @@ class RunService:
             RuntimeStore(cfg.state_db, cfg.trace_dir),
             trace_root=cfg.trace_dir,
         )
+        self.runtime.store.recover_stale_runs()
         self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="agentforge")
         self.benchmarks: dict[str, dict[str, Any]] = {}
         self.metrics = MetricsRegistry()

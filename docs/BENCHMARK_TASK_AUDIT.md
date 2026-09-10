@@ -33,4 +33,4 @@ The four requested A/B/C/D experiments have not been claimed as executed on
 this machine because `HARNESS_LLM_KEY` is not configured. A real run must use
 `--trials 5 --k 5`, retain all traces, and record the AgentForge commit,
 model, temperature, tokenizer, and configuration snapshot before generating
-`docs/BENCHMARK_REPORT.md`.
+`docs/benchmark_report.md`.

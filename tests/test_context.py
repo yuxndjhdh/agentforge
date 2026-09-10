@@ -53,6 +53,16 @@ def test_within_budget_passthrough():
     assert stats["compressed"] is False
 
 
+def test_compression_can_be_disabled_without_changing_messages():
+    msgs = _make_steps(12, obs_len=300)
+    out, stats = compact_messages(msgs, max_chars=10, min_tail_steps=2, enabled=False)
+    assert out is msgs
+    assert stats["compression_enabled"] is False
+    assert stats["status"] == "disabled"
+    assert stats["compressed"] is False
+    assert stats["saved_chars"] == 0
+
+
 def test_compressed_drops_oldest_and_summarizes():
     msgs = _make_steps(12, obs_len=300)
     in_chars = count_chars(msgs)

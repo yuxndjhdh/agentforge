@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "agentforge"
 version = "0.3.0"
 description = "Reliable code-agent execution, evaluation, tracing, and sandbox runtime"
-readme = "README.md"
+readme = "readme.md"
 requires-python = ">=3.11"
 dependencies = [
   "smolagents[openai]==1.26.0",

@@ -55,6 +55,7 @@ class CompactingModel(OpenAICompatServerModel):
         *,
         max_context_chars: int,
         context_min_tail: int,
+        context_compression_enabled: bool = True,
         max_context_tokens: int | None = None,
         token_counter=None,
         tokenizer_metadata: dict | None = None,
@@ -68,11 +69,13 @@ class CompactingModel(OpenAICompatServerModel):
         super().__init__(**kwargs)
         self.max_context_chars = max_context_chars
         self.context_min_tail = context_min_tail
+        self.context_compression_enabled = bool(context_compression_enabled)
         self.max_context_tokens = max_context_tokens
         self.token_counter = token_counter
         self.tokenizer_metadata = dict(tokenizer_metadata or {})
         self.event_sink = event_sink
         self.compressions: list[dict] = []  # 每次实际触发的压缩统计
+        self.compression_stats: list[dict] = []  # 每次请求的状态，包含 disabled/within_budget
 
     def generate(
         self,
@@ -90,7 +93,9 @@ class CompactingModel(OpenAICompatServerModel):
             max_tokens=self.max_context_tokens,
             tokenizer_name=self.tokenizer_metadata.get("name"),
             tokenizer_estimated=self.tokenizer_metadata.get("estimated"),
+            enabled=self.context_compression_enabled,
         )
+        self.compression_stats.append(stats)
         if stats["compressed"]:
             self.compressions.append(stats)
         # 不在此传 tool_choice：父类 OpenAICompatServerModel.generate 已负责剥 tool_choice，
@@ -140,6 +145,7 @@ def build_model(cfg: ModelConfig, *, event_sink=None):
         temperature=cfg.temperature,
         max_context_chars=cfg.max_context_chars,
         context_min_tail=cfg.context_min_tail,
+        context_compression_enabled=cfg.context_compression_enabled,
         max_context_tokens=cfg.max_context_tokens,
         token_counter=token_counter,
         tokenizer_metadata=tokenizer_metadata,

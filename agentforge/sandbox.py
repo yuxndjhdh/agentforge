@@ -212,31 +212,45 @@ class Sandbox:
             container = ContainerExecutor(self)
             diagnostic = container.diagnose()
             if diagnostic.available:
-                return container.execute(
+                result = container.execute(
                     argv,
                     cwd=cwd,
                     env=env,
                     timeout=timeout,
                     max_output_bytes=limit,
                 )
-            if self.backend in {"docker", "podman"}:
+                if result.error is None or self.backend != "auto":
+                    return result
+                reason = result.error
+                logger.warning("sandbox auto backend falling back to local execution: %s", reason)
+                self._record(
+                    PolicyDecision(
+                        True,
+                        "backend_fallback",
+                        f"auto backend fell back to local: {reason}",
+                        raw,
+                        self.policy_version,
+                    )
+                )
+            elif self.backend in {"docker", "podman"}:
                 return ExecutionResult(
                     None,
                     "",
                     "",
                     error=diagnostic.error or "container runtime is unavailable",
                 )
-            reason = diagnostic.error or "container runtime is unavailable"
-            logger.warning("sandbox auto backend falling back to local execution: %s", reason)
-            self._record(
-                PolicyDecision(
-                    True,
-                    "backend_fallback",
-                    f"auto backend fell back to local: {reason}",
-                    raw,
-                    self.policy_version,
+            else:
+                reason = diagnostic.error or "container runtime is unavailable"
+                logger.warning("sandbox auto backend falling back to local execution: %s", reason)
+                self._record(
+                    PolicyDecision(
+                        True,
+                        "backend_fallback",
+                        f"auto backend fell back to local: {reason}",
+                        raw,
+                        self.policy_version,
+                    )
                 )
-            )
         try:
             proc = subprocess.Popen(
                 argv,

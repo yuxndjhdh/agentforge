@@ -73,13 +73,26 @@ def cmd_eval(args) -> int:
 
 
 def cmd_benchmark(args) -> int:
-    from .benchmark import run_benchmark
+    from .benchmark import BenchmarkOptions, run_benchmark
     from .code_tasks import select_benchmark_tasks
 
     cfg = load_config()
     names = [name.strip() for name in args.tasks.split(",") if name.strip()] if args.tasks else None
     try:
         tasks = select_benchmark_tasks(names)
+        options = BenchmarkOptions(
+            context_compression_enabled=(
+                cfg.context_compression_enabled
+                if args.context_compression is None
+                else args.context_compression
+            ),
+            verify_enabled=args.verify_retry,
+            max_attempts=(
+                args.verify_attempts
+                if args.verify_attempts is not None
+                else (3 if args.verify_retry else 1)
+            ),
+        )
     except ValueError as exc:
         print(f"错误: {exc}", file=sys.stderr)
         return 2
@@ -90,9 +103,13 @@ def cmd_benchmark(args) -> int:
         k=args.k,
         out_dir=args.out,
         seed=args.seed,
+        options=options,
     )
     summary = report["summary"]
-    print(f"benchmark: {report['benchmark_version']}  tasks={summary['tasks']} episodes={summary['episodes']}")
+    print(
+        f"benchmark: {report['benchmark_version']}  experiment={report['experiment_id']} "
+        f"tasks={summary['tasks']} episodes={summary['episodes']}"
+    )
     print(f"pass@1={summary['pass@1']:.3f}  pass@{args.k}={summary['pass@k']:.3f}")
     print(f"p50={summary['p50_latency_seconds']:.3f}s  p95={summary['p95_latency_seconds']:.3f}s")
     print(f"report: {report['report_path']}")
@@ -201,6 +218,40 @@ def main(argv=None) -> int:
     p_bench.add_argument("--tasks", default="", help="逗号分隔任务名，缺省为 benchmark 全部任务")
     p_bench.add_argument("--out", default="runs/benchmarks/latest", help="报告输出目录")
     p_bench.add_argument("--seed", type=int, default=0, help="固定实验 seed（任务本身为确定性 seed）")
+    compression_group = p_bench.add_mutually_exclusive_group()
+    compression_group.add_argument(
+        "--context-compression",
+        dest="context_compression",
+        action="store_true",
+        help="启用上下文压缩",
+    )
+    compression_group.add_argument(
+        "--no-context-compression",
+        dest="context_compression",
+        action="store_false",
+        help="关闭上下文压缩",
+    )
+    p_bench.set_defaults(context_compression=None)
+    retry_group = p_bench.add_mutually_exclusive_group()
+    retry_group.add_argument(
+        "--verify-retry",
+        dest="verify_retry",
+        action="store_true",
+        help="启用验收失败反馈重试",
+    )
+    retry_group.add_argument(
+        "--no-verify-retry",
+        dest="verify_retry",
+        action="store_false",
+        help="关闭验收失败反馈重试",
+    )
+    p_bench.set_defaults(verify_retry=False)
+    p_bench.add_argument(
+        "--verify-attempts",
+        type=int,
+        default=None,
+        help="启用 Verify retry 时的最大尝试次数，缺省为 3",
+    )
     p_bench.set_defaults(fn=cmd_benchmark)
 
     p_serve = sub.add_parser("serve", help="启动 FastAPI 服务")

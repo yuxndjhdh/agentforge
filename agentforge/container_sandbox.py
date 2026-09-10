@@ -66,16 +66,29 @@ class ContainerExecutor:
         if driver is None and Path(self.runtime).name.lower().startswith("podman"):
             driver = _probe(self.runtime, ["info", "--format", "{{.store.graphDriverName}}"])
         storage_status = _storage_limit_status(driver, self.sandbox.disk_limit_mb)
-        error = None if version else "container runtime did not return a server version"
+        image_pinned = _is_pinned_image(self.sandbox.image)
+        image_available = bool(
+            version
+            and image_pinned
+            and _probe(self.runtime, ["image", "inspect", self.sandbox.image, "--format", "{{.Id}}"])
+        )
+        if not version:
+            error = "container runtime did not return a server version"
+        elif not image_pinned:
+            error = "sandbox image must be pinned by a sha256 digest"
+        elif not image_available:
+            error = f"sandbox image is not available locally: {self.sandbox.image}"
+        else:
+            error = None
         return ContainerRuntimeDiagnostic(
             requested=self.sandbox.backend,
             runtime=self.runtime,
-            available=version is not None,
+            available=bool(version and image_available),
             version=version,
             storage_driver=driver,
             storage_limit_status=storage_status,
             image=self.sandbox.image,
-            image_pinned=_is_pinned_image(self.sandbox.image),
+            image_pinned=image_pinned,
             error=error,
         )
 

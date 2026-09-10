@@ -47,6 +47,7 @@ class ModelConfig:
     output_cost_per_million: float = 0.0
     state_db: str = ".agentforge/state.sqlite3"
     trace_dir: str = "runs"
+    context_compression_enabled: bool = True
 
     def __post_init__(self) -> None:
         if self.max_steps < 1:
@@ -88,6 +89,7 @@ def load_config() -> ModelConfig:
             else None
         ),
         tokenizer=os.environ.get("HARNESS_TOKENIZER", "auto"),
+        context_compression_enabled=_env_bool("HARNESS_CONTEXT_COMPRESSION", True),
         context_min_tail=int(os.environ.get("HARNESS_CONTEXT_MIN_TAIL", "4")),
         sandbox_whitelist=os.environ.get("HARNESS_SANDBOX_WHITELIST", ""),
         sandbox_denylist=os.environ.get("HARNESS_SANDBOX_DENYLIST", ""),
@@ -110,3 +112,15 @@ def load_config() -> ModelConfig:
         state_db=os.environ.get("AGENTFORGE_STATE_DB", ".agentforge/state.sqlite3"),
         trace_dir=os.environ.get("AGENTFORGE_TRACE_DIR", "runs"),
     )
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be one of 0|1|true|false")

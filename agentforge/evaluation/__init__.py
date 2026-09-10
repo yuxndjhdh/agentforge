@@ -1,6 +1,6 @@
 """Evaluation namespace for task schemas, checks, metrics, and benchmarks."""
 
-from ..benchmark import load_report, public_config, run_benchmark
+from ..benchmark import BenchmarkOptions, load_report, public_config, run_benchmark
 from ..eval import (
     Check,
     CodeTask,
@@ -28,4 +28,5 @@ __all__ = [
     "load_report",
     "public_config",
     "run_benchmark",
+    "BenchmarkOptions",
 ]

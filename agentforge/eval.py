@@ -21,7 +21,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 from .config import ModelConfig
 from .harness import _now_id, make_agent
@@ -315,6 +315,154 @@ class EvalResult:
     elapsed_seconds: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0
+    attempts: list[dict[str, Any]] = field(default_factory=list)
+    compression_enabled: bool | None = None
+    compression_stats: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _feedback_prompt(instruction: str, feedback: str) -> str:
+    return f"{instruction}\n\n[自检未通过，请修正后重试]\n{feedback}"
+
+
+def _attempt_tokens(steps: list[dict[str, Any]]) -> tuple[int, int]:
+    action_steps = [step for step in steps if step.get("kind") == "action"]
+    return (
+        sum(int((step.get("token_usage") or {}).get("input") or 0) for step in action_steps),
+        sum(int((step.get("token_usage") or {}).get("output") or 0) for step in action_steps),
+    )
+
+
+def _failure_type_from_steps(
+    reward: int,
+    steps: list[dict[str, Any]],
+    error: str | None = None,
+) -> str | None:
+    if reward:
+        return None
+    if error:
+        return "agent_error"
+    if not steps:
+        return "did_not_act"
+    if any(str(step.get("observation", "")).startswith("Error:") for step in steps):
+        return "tool_error"
+    if any("timed out" in str(step.get("observation", "")).lower() for step in steps):
+        return "timeout"
+    return "state_mismatch"
+
+
+def _execute_episode(
+    cfg: ModelConfig,
+    task: CodeTask,
+    *,
+    instruction: str,
+    workdir: str,
+    agent: Any,
+    out_dir: str | Path,
+    verify_enabled: bool,
+    max_attempts: int,
+) -> EvalResult:
+    """Execute one episode, optionally with same-agent verify feedback retries."""
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be >= 1")
+    if not verify_enabled and max_attempts != 1:
+        raise ValueError("max_attempts must be 1 when verify retry is disabled")
+
+    run_id = _now_id()
+    started = time.perf_counter()
+    trace = RunTrace(
+        run_id=run_id,
+        workdir=os.path.realpath(workdir),
+        task=instruction,
+        model=cfg.model,
+        status="running",
+    )
+    attempts: list[dict[str, Any]] = []
+    previous_feedback = ""
+    limit = max_attempts if verify_enabled else 1
+
+    for attempt_index in range(limit):
+        prompt = _feedback_prompt(instruction, previous_feedback) if attempt_index else instruction
+        before = len(getattr(getattr(agent, "memory", None), "steps", []) or [])
+        attempt_started = time.perf_counter()
+        answer = ""
+        error: str | None = None
+        attempt_steps: list[dict[str, Any]] = []
+        try:
+            answer = str(agent.run(prompt, reset=(attempt_index == 0)))
+            attempt_trace = RunTrace.from_smol_agent(
+                agent,
+                run_id=run_id,
+                workdir=os.path.realpath(workdir),
+                task=instruction,
+                model=cfg.model,
+                start_index=before,
+            )
+            attempt_steps = list(attempt_trace.steps)
+            trace.steps.extend(attempt_steps)
+            reward = eval_reward(workdir, task)
+            feedback = failure_feedback(workdir, task)
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            attempt_steps = [{"kind": "error", "error": error}]
+            trace.steps.extend(attempt_steps)
+            reward = 0
+            feedback = f"Agent execution failed: {error}"
+
+        input_tokens, output_tokens = _attempt_tokens(attempt_steps)
+        attempt_record: dict[str, Any] = {
+            "attempt": attempt_index,
+            "reward": reward,
+            "feedback": feedback,
+            "answer": answer[:200],
+            "trace_steps": attempt_steps,
+            "elapsed_seconds": time.perf_counter() - attempt_started,
+            "steps": len([step for step in attempt_steps if step.get("kind") == "action"]),
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "failure_type": _failure_type_from_steps(reward, attempt_steps, error),
+        }
+        attempts.append(attempt_record)
+        if verify_enabled:
+            trace.add_manual(
+                "verify",
+                attempt=attempt_index,
+                reward=reward,
+                feedback=feedback,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
+        if reward == 1:
+            break
+        previous_feedback = feedback
+
+    model = getattr(agent, "model", None)
+    trace.compression = list(getattr(model, "compressions", []) or [])
+    trace.compression_stats = list(getattr(model, "compression_stats", []) or [])
+    enabled = getattr(model, "context_compression_enabled", None)
+    trace.compression_enabled = bool(enabled) if enabled is not None else None
+    final_reward = int(attempts[-1]["reward"]) if attempts else 0
+    trace.status = "succeeded" if final_reward else "failed"
+    trace_path = trace.dump(Path(out_dir) / task.name / run_id / "trace.json")
+    for attempt_record in attempts:
+        attempt_record["trace_path"] = str(trace_path)
+    total_input = sum(int(item["input_tokens"]) for item in attempts)
+    total_output = sum(int(item["output_tokens"]) for item in attempts)
+    final_answer = str(attempts[-1]["answer"]) if attempts else ""
+    return EvalResult(
+        task=task.name,
+        reward=final_reward,
+        workdir=workdir,
+        answer=final_answer,
+        trace=trace,
+        diff=tree_diff(workdir, task) if final_reward == 0 else None,
+        trace_path=trace_path,
+        elapsed_seconds=time.perf_counter() - started,
+        input_tokens=total_input,
+        output_tokens=total_output,
+        attempts=attempts,
+        compression_enabled=trace.compression_enabled,
+        compression_stats=trace.compression_stats,
+    )
 
 
 def solve_task(
@@ -323,49 +471,34 @@ def solve_task(
     *,
     out_dir: str | Path = "runs/eval",
     keep_workdir: bool = False,
+    verify_enabled: bool = False,
+    max_attempts: int = 1,
+    agent=None,
+    workdir: str | None = None,
 ) -> EvalResult:
-    """在全新副本上运行并评测任务，默认在返回前清理临时目录。"""
+    """在全新副本上运行并评测任务，支持同一 episode 内的 verify retry。"""
     task.validate()
-    temp_root = tempfile.TemporaryDirectory(prefix="agentforge-eval-")
-    wd = temp_root.name
-    started = time.perf_counter()
+    owned_workdir = workdir is None
+    temp_root = tempfile.TemporaryDirectory(prefix="agentforge-eval-") if owned_workdir else None
+    wd = temp_root.name if temp_root is not None else os.path.realpath(workdir or "")
     try:
-        task.build_seed(wd)
-        agent = make_agent(cfg, wd)
-        answer = agent.run(task.instruction)
-        reward = eval_reward(wd, task)
-        run_id = _now_id()
-        trace = RunTrace.from_smol_agent(
-            agent,
-            run_id=run_id,
-            workdir=os.path.realpath(wd),
-            task=task.instruction,
-            model=cfg.model,
+        if owned_workdir:
+            task.build_seed(wd)
+        current_agent = agent or make_agent(cfg, wd)
+        result = _execute_episode(
+            cfg,
+            task,
+            instruction=task.instruction,
+            workdir=wd,
+            agent=current_agent,
+            out_dir=out_dir,
+            verify_enabled=verify_enabled,
+            max_attempts=max_attempts,
         )
-        diff = tree_diff(wd, task) if reward == 0 else None
-        trace_path = trace.dump(Path(out_dir) / task.name / run_id / "trace.json")
-        action_steps = [step for step in trace.steps if step.get("kind") == "action"]
-        input_tokens = sum(
-            int((step.get("token_usage") or {}).get("input") or 0) for step in action_steps
-        )
-        output_tokens = sum(
-            int((step.get("token_usage") or {}).get("output") or 0) for step in action_steps
-        )
-        return EvalResult(
-            task.name,
-            reward,
-            wd,
-            str(answer),
-            trace,
-            diff,
-            trace_path,
-            cleaned_up=not keep_workdir,
-            elapsed_seconds=time.perf_counter() - started,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-        )
+        result.cleaned_up = bool(owned_workdir and not keep_workdir)
+        return result
     finally:
-        if not keep_workdir:
+        if temp_root is not None and not keep_workdir:
             temp_root.cleanup()
 
 
@@ -484,11 +617,19 @@ def evaluate(
     num_trials: int = 1,
     k: int = 1,
     out_dir: str | Path = "runs/eval",
+    verify_enabled: bool = False,
+    max_attempts: int = 1,
 ) -> dict:
     if num_trials < 1:
         raise ValueError("num_trials must be >= 1")
     if not 1 <= k <= num_trials:
         raise ValueError("k must satisfy 1 <= k <= num_trials")
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be >= 1")
+    if not verify_enabled and max_attempts != 1:
+        raise ValueError("max_attempts must be 1 when verify retry is disabled")
+    if verify_enabled and max_attempts < 2:
+        raise ValueError("max_attempts must be >= 2 when verify retry is enabled")
     for task in tasks:
         task.validate()
     names = [task.name for task in tasks]
@@ -499,23 +640,61 @@ def evaluate(
     episodes: list[dict] = []
     for task in tasks:
         for trial in range(num_trials):
-            res = solve_task(cfg, task, out_dir=out_dir)
+            if verify_enabled or max_attempts != 1:
+                res = solve_task(
+                    cfg,
+                    task,
+                    out_dir=out_dir,
+                    verify_enabled=verify_enabled,
+                    max_attempts=max_attempts,
+                )
+            else:
+                # Keep the narrow call signature for existing integrations that
+                # inject a fake solve_task during deterministic report tests.
+                res = solve_task(cfg, task, out_dir=out_dir)
             if res.reward == 1:
                 success[task.name] += 1
             elif len(failures) < 5:
                 failures.append(analyze_failure(task, res))
+            attempt_records = list(res.attempts)
+            first_attempt = attempt_records[0] if attempt_records else {
+                "reward": res.reward,
+                "input_tokens": res.input_tokens,
+                "output_tokens": res.output_tokens,
+            }
+            compression_stats = list(res.compression_stats)
+            compression_trigger_count = sum(
+                1 for item in compression_stats if item.get("compressed") is True
+            )
             episodes.append(
                 {
                     "task": task.name,
                     "trial": trial,
                     "reward": res.reward,
+                    "first_reward": int(first_attempt.get("reward", res.reward)),
                     "answer": res.answer[:200],
                     "trace_path": str(res.trace_path) if res.trace_path else None,
                     "elapsed_seconds": res.elapsed_seconds,
                     "steps": len([step for step in (res.trace.steps if res.trace else []) if step.get("kind") == "action"]),
                     "input_tokens": res.input_tokens,
                     "output_tokens": res.output_tokens,
+                    "first_input_tokens": int(first_attempt.get("input_tokens", 0)),
+                    "first_output_tokens": int(first_attempt.get("output_tokens", 0)),
+                    "attempt_count": len(attempt_records) or 1,
+                    "attempts": attempt_records,
                     "failure_type": _failure_type(task, res),
+                    "compression_enabled": res.compression_enabled,
+                    "compression_stats": compression_stats,
+                    "compression_trigger_count": compression_trigger_count,
+                    "compression_dropped_steps": sum(
+                        int(item.get("dropped_steps", 0) or 0) for item in compression_stats
+                    ),
+                    "compression_saved_chars": sum(
+                        int(item.get("saved_chars", 0) or 0) for item in compression_stats
+                    ),
+                    "compression_saved_tokens": sum(
+                        int(item.get("saved_tokens", 0) or 0) for item in compression_stats
+                    ),
                 }
             )
     n = len(tasks)
@@ -537,6 +716,8 @@ def evaluate(
 def _failure_type(task: CodeTask, result: EvalResult) -> str | None:
     if result.reward:
         return None
+    if result.attempts and result.attempts[-1].get("failure_type"):
+        return str(result.attempts[-1]["failure_type"])
     steps = [step for step in (result.trace.steps if result.trace else []) if step.get("kind") == "action"]
     if not steps:
         return "did_not_act"

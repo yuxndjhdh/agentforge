@@ -129,11 +129,14 @@ def compact_messages(
     max_tokens: int | None = None,
     tokenizer_name: str | None = None,
     tokenizer_estimated: bool | None = None,
+    enabled: bool = True,
 ) -> tuple[list, dict]:
     """超字符或 token 预算则折叠最旧步；不修改入参。
 
     ``token_counter`` 是可插拔的 provider tokenizer；未提供时只使用字符
     预算。输入、输出 token 会记录到 stats，便于 benchmark 做真实成本统计。
+    ``enabled=False`` 保持原消息不变，但仍记录一次 ``disabled`` 状态，便于
+    benchmark 区分“没有超预算”和“实验明确关闭压缩”。
     """
     in_chars = count_chars(messages)
     counter = token_counter
@@ -151,7 +154,8 @@ def compact_messages(
     in_tokens = counter(messages) if counter else None
     stats = {
         "compressed": False,
-        "status": "within_budget",
+        "compression_enabled": bool(enabled),
+        "status": "within_budget" if enabled else "disabled",
         "in_chars": in_chars,
         "out_chars": in_chars,
         "saved_chars": 0,
@@ -160,11 +164,14 @@ def compact_messages(
         "boundary_is_assistant": bool(messages and _role(messages[-1]) == "assistant"),
         "in_tokens": in_tokens,
         "out_tokens": in_tokens,
+        "saved_tokens": 0,
         "max_tokens": max_tokens,
         "budget_source": "tokens" if max_tokens is not None else "characters",
         "tokenizer": tokenizer_name,
         "token_estimated": tokenizer_estimated,
     }
+    if not enabled:
+        return messages, stats
     within_tokens = max_tokens is None or (in_tokens is not None and in_tokens <= max_tokens)
     if (in_chars <= max_chars and within_tokens) or not messages:
         return messages, stats
@@ -237,6 +244,11 @@ def compact_messages(
             "kept_steps": len(ranges) - len(dropped),
             "boundary_is_assistant": boundary_is_assistant,
             "out_tokens": out_tokens,
+            "saved_tokens": (
+                max(0, in_tokens - out_tokens)
+                if in_tokens is not None and out_tokens is not None
+                else 0
+            ),
         }
     )
     return kept_msgs, stats

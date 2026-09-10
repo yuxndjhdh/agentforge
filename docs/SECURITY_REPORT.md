@@ -23,10 +23,26 @@ fallback and is not treated as a kernel security boundary.
 
 ## Current Machine
 
-The Windows development machine used for this change has no Docker or Podman
-executable available. Therefore the live container tests were not claimed as
-passed, and no storage-driver capability was fabricated. The diagnostic
-command reports this as unavailable and explicit container mode fails closed.
+The Windows development machine uses Docker Desktop's Linux engine. The
+following live evidence was collected on 2026-09-10:
+
+```text
+Docker Server: 29.7.2
+Kernel: 6.18.33.2-microsoft-standard-WSL2
+Storage driver: overlayfs
+Image: python:3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285
+Integration tests: 3 passed
+Disk quota status: requires-live-probe
+```
+
+`agentforge sandbox diagnose` reported the runtime and pinned image as
+available. The integration tests verified non-root execution, a writable
+`/workspace` mount under the read-only-root configuration, no
+network/secret-environment behavior, timeout handling, and output
+reclamation. They do not yet directly probe writes outside `/workspace` or
+CPU/PID enforcement. The storage driver did not provide enough evidence for
+the adapter to claim that `--storage-opt=size=` is enforced, so the quota
+remains unverified and executions with a configured disk limit fail closed.
 The default image reference is digest-pinned; user-supplied unpinned images
 are rejected by the container executor.
 

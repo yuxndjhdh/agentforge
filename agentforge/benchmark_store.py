@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS benchmark_jobs (
     seed INTEGER NOT NULL,
     tasks_json TEXT NOT NULL,
     config_json TEXT NOT NULL,
+    experiment_json TEXT NOT NULL DEFAULT '{}',
     report_path TEXT,
     error TEXT
 );
@@ -41,7 +42,18 @@ class BenchmarkStore:
         self._connection.execute("PRAGMA journal_mode=WAL")
         self._connection.execute("PRAGMA synchronous=FULL")
         self._connection.executescript(SCHEMA)
+        self._ensure_schema()
         self._lock = threading.RLock()
+
+    def _ensure_schema(self) -> None:
+        columns = {
+            str(row[1])
+            for row in self._connection.execute("PRAGMA table_info(benchmark_jobs)").fetchall()
+        }
+        if "experiment_json" not in columns:
+            self._connection.execute(
+                "ALTER TABLE benchmark_jobs ADD COLUMN experiment_json TEXT NOT NULL DEFAULT '{}'"
+            )
 
     def close(self) -> None:
         with self._lock:
@@ -53,8 +65,8 @@ class BenchmarkStore:
             self._connection.execute(
                 """INSERT INTO benchmark_jobs
                 (id, status, created_at, updated_at, trials, k, seed, tasks_json,
-                 config_json, report_path, error)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                 config_json, experiment_json, report_path, error)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     record["id"],
                     record.get("status", "running"),
@@ -65,6 +77,7 @@ class BenchmarkStore:
                     int(record.get("seed", 0)),
                     json.dumps(record.get("tasks", []), ensure_ascii=False),
                     json.dumps(record.get("config", {}), ensure_ascii=False),
+                    json.dumps(record.get("experiment", {}), ensure_ascii=False),
                     record.get("report_path"),
                     record.get("error"),
                 ),
@@ -79,10 +92,22 @@ class BenchmarkStore:
         return _record(row) if row else None
 
     def update(self, job_id: str, **changes: Any) -> dict[str, Any] | None:
-        allowed = {"status", "report_path", "error", "config", "tasks", "trials", "k", "seed"}
+        allowed = {
+            "status",
+            "report_path",
+            "error",
+            "config",
+            "experiment",
+            "tasks",
+            "trials",
+            "k",
+            "seed",
+        }
         fields = {key: value for key, value in changes.items() if key in allowed}
         if "config" in fields:
             fields["config_json"] = json.dumps(fields.pop("config"), ensure_ascii=False)
+        if "experiment" in fields:
+            fields["experiment_json"] = json.dumps(fields.pop("experiment"), ensure_ascii=False)
         if "tasks" in fields:
             fields["tasks_json"] = json.dumps(fields.pop("tasks"), ensure_ascii=False)
         fields["updated_at"] = time.time()
@@ -112,6 +137,7 @@ class BenchmarkStore:
 
 
 def _record(row: sqlite3.Row) -> dict[str, Any]:
+    experiment = _load(row["experiment_json"], {})
     return {
         "id": row["id"],
         "status": row["status"],
@@ -122,6 +148,8 @@ def _record(row: sqlite3.Row) -> dict[str, Any]:
         "seed": row["seed"],
         "tasks": _load(row["tasks_json"], []),
         "config": _load(row["config_json"], {}),
+        "experiment": experiment,
+        "experiment_id": experiment.get("experiment_id") if isinstance(experiment, dict) else None,
         "report_path": row["report_path"],
         "error": row["error"],
     }

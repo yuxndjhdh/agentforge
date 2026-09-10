@@ -12,6 +12,12 @@ def _record():
         "seed": 7,
         "tasks": ["fix-add"],
         "config": {"model": "fake", "api_key": "<redacted>"},
+        "experiment": {
+            "experiment_id": "A",
+            "context_compression_enabled": False,
+            "verify_enabled": False,
+            "max_attempts": 1,
+        },
     }
 
 
@@ -28,6 +34,7 @@ def test_benchmark_jobs_survive_store_rebuild_and_running_jobs_are_recovered(tmp
         assert job is not None
         assert job["tasks"] == ["fix-add"]
         assert job["config"]["api_key"] == "<redacted>"
+        assert job["experiment_id"] == "A"
         assert "restart" in job["error"]
     finally:
         rebuilt.close()

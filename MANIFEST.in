@@ -1,4 +1,5 @@
 include LICENSE
-include README.md
+include readme.md
 include scripts/demo_selftest.py
+include scripts/summarize_benchmark.py
 recursive-include agentforge/api/static *.html

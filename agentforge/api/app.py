@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import __version__
-from ..benchmark import public_config
+from ..benchmark import BenchmarkOptions, public_config
 from ..benchmark_store import BenchmarkStore
 from ..config import ModelConfig, load_config
 from ..observability import MetricsRegistry, configure_tracing
@@ -46,6 +46,9 @@ class BenchmarkRequest(BaseModel):
     k: int = Field(default=1, ge=1)
     seed: int = 0
     tasks: list[str] | None = None
+    context_compression: bool | None = None
+    verify_retry: bool = False
+    verify_attempts: int | None = Field(default=None, ge=1)
 
 
 class RunService:
@@ -139,6 +142,24 @@ class RunService:
         if request.k > request.trials:
             raise ValueError("k must be <= trials")
         tasks = select_benchmark_tasks(request.tasks)
+        explicit_options = (
+            request.context_compression is not None
+            or request.verify_retry
+            or request.verify_attempts is not None
+        )
+        options = BenchmarkOptions(
+            context_compression_enabled=(
+                self.cfg.context_compression_enabled
+                if request.context_compression is None
+                else request.context_compression
+            ),
+            verify_enabled=request.verify_retry,
+            max_attempts=(
+                request.verify_attempts
+                if request.verify_attempts is not None
+                else (3 if request.verify_retry else 1)
+            ),
+        )
         benchmark_id = f"benchmark_{uuid.uuid4().hex}"
         record = {
             "id": benchmark_id,
@@ -148,19 +169,22 @@ class RunService:
             "seed": request.seed,
             "tasks": [task.name for task in tasks],
             "config": public_config(self.cfg),
+            "experiment_id": options.experiment_id,
+            "experiment": options.to_dict(),
         }
         self.benchmark_store.create(record)
 
         def worker() -> None:
             try:
-                result = run_benchmark(
-                    self.cfg,
-                    tasks,
-                    num_trials=request.trials,
-                    k=request.k,
-                    seed=request.seed,
-                    out_dir=Path(self.cfg.trace_dir) / "benchmarks" / benchmark_id,
-                )
+                benchmark_kwargs: dict[str, Any] = {
+                    "num_trials": request.trials,
+                    "k": request.k,
+                    "seed": request.seed,
+                    "out_dir": Path(self.cfg.trace_dir) / "benchmarks" / benchmark_id,
+                }
+                if explicit_options:
+                    benchmark_kwargs["options"] = options
+                result = run_benchmark(self.cfg, tasks, **benchmark_kwargs)
                 self.benchmark_store.update(
                     benchmark_id,
                     status="succeeded",

@@ -70,3 +70,12 @@ def test_benchmark_report_uses_fake_solver_and_writes_atomically(tmp_path, monke
     recovered = run_benchmark(cfg, tasks[:1], num_trials=1, k=1, out_dir=tmp_path / "report")
     assert load_report(tmp_path / "report" / "report.json")["task_order"] == ["pass"]
     assert recovered["seed"] == 0
+
+
+def test_load_report_rejects_unknown_schema(tmp_path):
+    path = tmp_path / "report.json"
+    path.write_text('{"schema_version": 99}', encoding="utf-8")
+    import pytest
+
+    with pytest.raises(ValueError, match="unsupported benchmark report schema_version"):
+        load_report(path)

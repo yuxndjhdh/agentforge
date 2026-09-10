@@ -34,7 +34,17 @@ copy .env.example .env
 .venv/Scripts/python -m agentforge sandbox diagnose
 ```
 
-`benchmark` 使用 23 个固定 seed 任务，报告写入 `runs/benchmarks/latest/report.json`，其中包含模型、版本、实验配置、任务顺序、seed、任务规格、完整 episode、失败 trace、pass@1/pass@3/pass@5/pass@k、p50/p95 延迟、步数、token、估算成本和失败类型。没有配置单价时成本记录为 0，不会用估算值冒充真实账单。任务审核见 `docs/BENCHMARK_TASK_AUDIT.md`。
+`benchmark` 使用 23 个固定 seed 任务，报告写入 `runs/benchmarks/latest/report.json`，其中包含模型、版本、实验配置、任务顺序、seed、任务规格、完整 episode、失败 trace、pass@1/pass@3/pass@5/pass@k、p50/p95 延迟、步数、token、估算成本和失败类型。没有配置单价时成本记录为 0，不会用估算值冒充真实账单。任务审核见 `docs/benchmark_task_audit.md`。
+
+正式消融实验通过显式开关区分 A/B/C/D；Verify retry 的额外尝试、token、成本和 trace 会保留在同一个 episode 中：
+
+```bash
+.venv/Scripts/python -m agentforge benchmark --trials 5 --k 5 --no-context-compression --no-verify-retry --out runs/benchmarks/v0.3.0-A
+.venv/Scripts/python -m agentforge benchmark --trials 5 --k 5 --context-compression --no-verify-retry --out runs/benchmarks/v0.3.0-B
+.venv/Scripts/python -m agentforge benchmark --trials 5 --k 5 --no-context-compression --verify-retry --verify-attempts 3 --out runs/benchmarks/v0.3.0-C
+.venv/Scripts/python -m agentforge benchmark --trials 5 --k 5 --context-compression --verify-retry --verify-attempts 3 --out runs/benchmarks/v0.3.0-D
+python scripts/summarize_benchmark.py runs/benchmarks/v0.3.0-A/report.json runs/benchmarks/v0.3.0-B/report.json runs/benchmarks/v0.3.0-C/report.json runs/benchmarks/v0.3.0-D/report.json --out docs/benchmark_report.md
+```
 
 ## 结构
 
@@ -100,7 +110,7 @@ pass@k = 1 - C(N - c, k) / C(N, k)
 - durable memory 是不可信数据，使用 JSON 编码和边界标记注入；`instruction` 类型不会自动注入系统提示。记忆支持 scope、覆盖、删除、导出和审计。
 - `project_id`、`user_id` 和 `run_id` 都参与记忆隔离；`run-local` 使用独立目录，不能被其他 run 查询或覆盖。上下文压缩优先使用 `tiktoken`，缺失时明确标记 `chars-div-4` 估算。
 
-本地 fallback 不是内核级隔离；不可信代码的生产执行必须配置可用的 Docker/Podman 或外部沙箱。威胁模型和运行手册见 `docs/THREAT_MODEL.md` 与 `docs/RUNBOOK.md`。
+本地 fallback 不是内核级隔离；不可信代码的生产执行必须配置可用的 Docker/Podman 或外部沙箱。威胁模型和运行手册见 `docs/threat_model.md` 与 `docs/runbook.md`。
 
 ## 开发验证
 
@@ -111,4 +121,4 @@ pass@k = 1 - C(N - c, k) / C(N, k)
 
 CI 执行 lint、类型检查、覆盖率、单元测试和安全回归。直接依赖版本记录在 `requirements.lock`；发布元数据在 `pyproject.toml`。
 
-当前工作区已实际验证：99 个测试通过、4 个平台/环境限制用例跳过；`ruff check agentforge tests`、`mypy agentforge`、`compileall` 和 FastAPI E2E smoke test 均通过。Docker/Podman live 安全验收需在 Linux CI 执行，结果见 `docs/SECURITY_REPORT.md`；memory/context 证据见 `docs/MEMORY_CONTEXT_REPORT.md`。
+当前工作区已实际验证：111 个测试通过、1 个平台/环境限制用例跳过；`ruff check agentforge tests scripts`、`mypy agentforge`、`compileall` 和 FastAPI E2E smoke test 均通过。Docker Desktop Linux engine 的 live 集成测试为 `3 passed`；磁盘 quota 仍为 `requires-live-probe`，结果见 `docs/security_report.md`；memory/context 证据见 `docs/memory_context_report.md`。

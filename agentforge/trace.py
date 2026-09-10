@@ -37,6 +37,8 @@ class RunTrace:
     model: str = ""
     steps: list[dict] = field(default_factory=list)
     compression: list[dict] = field(default_factory=list)
+    compression_stats: list[dict] = field(default_factory=list)
+    compression_enabled: bool | None = None
     status: str = "succeeded"
     attempt_id: str | None = None
     schema_version: int = 2
@@ -65,7 +67,11 @@ class RunTrace:
             status=status,
             attempt_id=attempt_id,
         )
-        trace.compression = list(getattr(getattr(agent, "model", None), "compressions", []) or [])
+        agent_model = getattr(agent, "model", None)
+        trace.compression = list(getattr(agent_model, "compressions", []) or [])
+        trace.compression_stats = list(getattr(agent_model, "compression_stats", []) or [])
+        enabled = getattr(agent_model, "context_compression_enabled", None)
+        trace.compression_enabled = bool(enabled) if enabled is not None else None
         memory = getattr(agent, "memory", None)
         steps = getattr(memory, "steps", []) or []
         for st in steps[max(0, start_index) : end_index]:
@@ -107,6 +113,8 @@ class RunTrace:
             "attempt_id": self.attempt_id,
             "steps": self.steps,
             "compression": self.compression,
+            "compression_stats": self.compression_stats,
+            "compression_enabled": self.compression_enabled,
             "events": self.events,
         }
 
@@ -141,6 +149,8 @@ class RunTrace:
             schema_version=int(data.get("schema_version", 1)),
             steps=data.get("steps", []),
             compression=data.get("compression", []),
+            compression_stats=data.get("compression_stats", data.get("compression", [])),
+            compression_enabled=data.get("compression_enabled"),
             events=data.get("events", []),
         )
 

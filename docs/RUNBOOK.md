@@ -19,6 +19,11 @@ python -m agentforge verify fix-add --attempts 3
 python -m agentforge trace runs/<run-id>/trace.json
 ```
 
+For benchmark ablations, use the explicit compression and Verify flags and keep
+the four output directories separate. The runner writes the variant metadata
+into each `report.json`; `scripts/summarize_benchmark.py` generates the
+comparison Markdown without manually copying numbers.
+
 ## API
 
 ```bash

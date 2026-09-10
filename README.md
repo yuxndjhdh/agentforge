@@ -14,7 +14,10 @@ copy .env.example .env
 
 ```bash
 .venv/Scripts/python -m agentforge selftest
+.venv/Scripts/python scripts/demo_selftest.py
 ```
+
+`scripts/demo_selftest.py` 是一个 3～5 分钟内可重复的无模型演示，输出最终变更、验收结果、步骤数、token、耗时和 trace 路径。
 
 需要 LLM 时，在 `.env` 中填写 `HARNESS_LLM_KEY`，然后运行：
 

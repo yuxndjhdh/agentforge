@@ -6,6 +6,7 @@
 python -m pytest tests/ -q
 python -m compileall -q agentforge
 python -m agentforge selftest --out runs/selftest
+python scripts/demo_selftest.py --out runs/demo
 ```
 
 ## Run with a model

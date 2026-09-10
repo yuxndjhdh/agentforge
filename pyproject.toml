@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentforge"
-version = "0.2.0"
+version = "0.3.0"
 description = "Reliable code-agent execution, evaluation, tracing, and sandbox runtime"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -50,6 +50,13 @@ addopts = "--strict-markers"
 markers = [
   "integration: requires a live Docker or Podman runtime",
 ]
+
+[tool.coverage.run]
+source = ["agentforge"]
+
+[tool.coverage.report]
+fail_under = 75
+show_missing = true
 
 [tool.ruff]
 target-version = "py311"

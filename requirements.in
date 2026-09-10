@@ -1,0 +1,19 @@
+# Runtime and CLI dependencies
+smolagents[openai]==1.26.0
+python-dotenv==1.2.3
+
+# API, observability, and tokenizer extras
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+opentelemetry-api==1.32.0
+opentelemetry-sdk==1.32.0
+opentelemetry-exporter-otlp==1.32.0
+tiktoken==0.14.0
+
+# Development and verification tools
+pytest==9.1.1
+pytest-cov==6.1.1
+ruff==0.11.8
+mypy==1.15.0
+pre-commit==4.2.0
+build==1.6.0

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0 - 2026-09-10
+
+- Persist benchmark jobs and run metadata across API service restarts.
+- Add resumable API attempts with concurrent-resume conflict handling.
+- Add runtime, LLM, tool, and verification tracing with optional OTLP export,
+  trace IDs in API/event records, and Prometheus histograms.
+- Add a pip-compile transitive lock, API E2E and packaging CI jobs, a 75%
+  measured coverage floor, and a deterministic no-LLM demo script.
+- Validation: 99 tests passed and 4 platform-limited integration tests were
+  skipped locally; Docker live verification and real LLM benchmark experiments
+  remain environment-dependent.
+
 ## 0.2.0 - 2026-09-10
 
 - Correct standard pass@k and command-check semantics.

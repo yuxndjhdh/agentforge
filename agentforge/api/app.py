@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+from .. import __version__
 from ..benchmark import public_config
 from ..benchmark_store import BenchmarkStore
 from ..config import ModelConfig, load_config
@@ -248,7 +249,7 @@ def create_app(cfg: ModelConfig | None = None, service: RunService | None = None
         finally:
             service.close()
 
-    app = FastAPI(title="AgentForge", version="0.2.0", lifespan=lifespan)
+    app = FastAPI(title="AgentForge", version=__version__, lifespan=lifespan)
     app.state.agentforge = service
 
     @app.get("/", response_class=HTMLResponse)

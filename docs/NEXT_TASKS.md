@@ -349,33 +349,33 @@ T5 完成门槛：
 
 ### T6-01 依赖与构建
 
-- [ ] 使用 `uv lock`、`pip-tools` 或等价工具生成完整传递依赖锁。
-- [ ] 在 Python 3.11、3.12、3.13 上验证锁文件和安装。
-- [ ] 构建 wheel 和 sdist，并在全新虚拟环境安装验证。
-- [ ] 验证 console script `agentforge` 可用。
-- [ ] 固定沙箱镜像 digest 和构建参数。
+- [x] 使用 `pip-compile` 生成完整传递依赖锁（`requirements.in` -> `requirements.lock`）。
+- [~] 在 Python 3.11、3.12、3.13 上验证锁文件和安装（CI matrix 已配置，本机只完成 3.13）。
+- [x] 构建 wheel 和 sdist，并在全新虚拟环境安装验证。
+- [x] 验证 console script `agentforge` 可用。
+- [x] 固定沙箱镜像 digest 和构建参数。
 
 ### T6-02 CI
 
-- [ ] 单元测试、ruff、mypy、coverage、compileall 在 GitHub Actions 通过。
-- [ ] 增加 Linux Docker 沙箱集成 job。
-- [ ] 增加 API E2E job。
-- [ ] 增加构建 wheel/sdist 的 packaging job。
-- [ ] 设置最低覆盖率门槛，初始建议 80%。
-- [ ] README 中展示真实 CI 状态。
+- [~] 单元测试、ruff、mypy、coverage、compileall 已接入 GitHub Actions；远端 workflow 尚未在本环境运行。
+- [~] Linux Docker 沙箱集成 job 已存在；live 结果仍需 Linux CI。
+- [x] 增加 API E2E job。
+- [x] 增加构建 wheel/sdist 的 packaging job。
+- [x] 设置 75% 最低覆盖率门槛（当前本机实测 75.19%；80% 目标待后续补测）。
+- [!] README 真实 CI 状态需远端 workflow 首次运行后补充，当前没有可验证的 CI URL/status。
 
 ### T6-03 文档与演示
 
-- [ ] 更新 README 快速开始、架构、安全边界和 benchmark 数据。
-- [ ] 更新 `ARCHITECTURE.md`、`THREAT_MODEL.md`、`RUNBOOK.md`。
-- [ ] 添加 `docs/BENCHMARK_REPORT.md` 和 `docs/SECURITY_REPORT.md`。
-- [ ] 添加 3～5 分钟可重复演示脚本。
-- [ ] 演示输出包含最终 diff、checks、步骤、token、耗时和 trace 路径。
+- [~] 更新 README 快速开始、架构、安全边界和 benchmark 数据（真实 benchmark 数据仍受 key 阻塞）。
+- [x] 更新 `ARCHITECTURE.md`、`THREAT_MODEL.md`、`RUNBOOK.md`。
+- [~] 已有 `docs/SECURITY_REPORT.md`；`docs/BENCHMARK_REPORT.md` 仍因真实实验阻塞。
+- [x] 添加 3～5 分钟可重复演示脚本。
+- [x] 演示输出包含最终 diff、checks、步骤、token、耗时和 trace 路径。
 
 ### T6-04 发布
 
-- [ ] 将版本提升到与实际能力一致的版本号。
-- [ ] 更新 CHANGELOG，禁止记录未验证的结果。
+- [x] 将版本提升到与实际能力一致的版本号（`0.3.0`）。
+- [x] 更新 CHANGELOG，禁止记录未验证的结果。
 - [ ] 创建 release commit 和 Git tag。
 - [ ] 从干净 clone 按 RUNBOOK 完整复现一次。
 - [ ] 保存最终 release 对应的 benchmark 和安全报告。
@@ -437,4 +437,5 @@ T0～T5 的代码、测试和文档工作已完成。后续只处理外部环境
 | 2026-09-10 | T2-01~T2-05 | `6ff3300`; `docs/SECURITY_REPORT.md` | 容器诊断、digest pin、auto 回退 trace、fail-closed 和 Linux Docker CI 已实现；当前 Windows 无 Docker/Podman，storage quota 与 live 攻击验收保留阻塞。 |
 | 2026-09-10 | T3-01~T3-04 | `40e3ecf`; `docs/MEMORY_CONTEXT_REPORT.md` | 完成 project/user/run-local 隔离、并发与损坏恢复、恶意记忆边界、tiktoken/字符 fallback 和预算 trace。 |
 | 2026-09-10 | T4-01~T4-03 | `d833357`; `docs/BENCHMARK_TASK_AUDIT.md` | 统一 CLI/API 任务选择，补精确行为验收、seed/config snapshot、fake solver 报告和 pass@1/3/5；真实实验因缺少 `HARNESS_LLM_KEY` 未执行。 |
-| 2026-09-10 | T5-01~T5-05 | 待提交 | Benchmark job SQLite 持久化、run resume API、运行级 trace/可选 OTLP、Prometheus histogram 和真实 worker E2E 已完成；本机未配置外部 OTLP 接收端。 |
+| 2026-09-10 | T5-01~T5-05 | `9aa25f4` | Benchmark job SQLite 持久化、run resume API、运行级 trace/可选 OTLP、Prometheus histogram 和真实 worker E2E 已完成；本机未配置外部 OTLP 接收端。 |
+| 2026-09-10 | T6-01~T6-03 | 待提交 | pip-compile 传递依赖锁、wheel/sdist fresh-venv 安装、0.3.0 元数据、API/packaging CI job 和无模型演示已完成；Python 3.11/3.12、远端 CI、Docker live 和真实 benchmark 仍待外部环境。 |

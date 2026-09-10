@@ -8,3 +8,6 @@ runs/
 .agentforge/
 .coverage
 .coverage.*
+build/
+dist/
+*.egg-info/

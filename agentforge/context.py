@@ -127,6 +127,8 @@ def compact_messages(
     *,
     token_counter: Callable[[list], int] | None = None,
     max_tokens: int | None = None,
+    tokenizer_name: str | None = None,
+    tokenizer_estimated: bool | None = None,
 ) -> tuple[list, dict]:
     """超字符或 token 预算则折叠最旧步；不修改入参。
 
@@ -135,14 +137,21 @@ def compact_messages(
     """
     in_chars = count_chars(messages)
     counter = token_counter
+    used_fallback = False
     if counter is None and max_tokens is not None:
         # A deterministic fallback is useful when a provider tokenizer is not
         # installed; reports should treat this as an estimate.
         def counter(items):
             return max(1, count_chars(items) // 4)
+        used_fallback = True
+    if tokenizer_name is None and used_fallback:
+        tokenizer_name = "chars-div-4"
+    if tokenizer_estimated is None and used_fallback:
+        tokenizer_estimated = True
     in_tokens = counter(messages) if counter else None
     stats = {
         "compressed": False,
+        "status": "within_budget",
         "in_chars": in_chars,
         "out_chars": in_chars,
         "saved_chars": 0,
@@ -152,6 +161,9 @@ def compact_messages(
         "in_tokens": in_tokens,
         "out_tokens": in_tokens,
         "max_tokens": max_tokens,
+        "budget_source": "tokens" if max_tokens is not None else "characters",
+        "tokenizer": tokenizer_name,
+        "token_estimated": tokenizer_estimated,
     }
     within_tokens = max_tokens is None or (in_tokens is not None and in_tokens <= max_tokens)
     if (in_chars <= max_chars and within_tokens) or not messages:
@@ -160,41 +172,50 @@ def compact_messages(
     prelude, ranges = _step_ranges(messages)
     if not ranges:
         # 只有 prelude（system + 任务），没有可丢的整步——原样返回
+        stats["status"] = "over_budget_uncompressible"
         return messages, stats
 
-    # 确定保留步数：尽量多保留最近步，但要在预算内；最低不低于 min_tail_steps。
-    # 每多丢一步，数字符约留下 ~160 字符摘要，而原步通常更大（观测往往 2000 字符量级），
-    # 所以「丢更多」净节省更多。这里从「全保留」开始，一次多丢一步直到满足预算。
-    keep_count = len(ranges)
-    while keep_count > min_tail_steps:
-        kept = ranges[-keep_count:]
-        candidate_msgs = list(messages[:prelude])
-        for start, end in kept:
-            candidate_msgs.extend(messages[start:end])
-        kept_chars = count_chars(candidate_msgs)
-        digest_est = _digest_size(len(ranges) - keep_count)
-        kept_tokens = counter(candidate_msgs) if counter else None
-        if kept_chars + digest_est <= max_chars and (
-            max_tokens is None or kept_tokens is None or kept_tokens <= max_tokens
+    def build_candidate(keep_count: int) -> tuple[list, list[tuple[int, int]], bool]:
+        if keep_count > 0:
+            dropped_ranges = ranges[:-keep_count] if keep_count < len(ranges) else []
+            kept_ranges = ranges[-keep_count:]
+        else:
+            dropped_ranges = ranges
+            kept_ranges = []
+        candidate = list(messages[:prelude])
+        digest_lines = [_step_digest(messages, start, end) for start, end in dropped_ranges]
+        dropped_chars = sum(count_chars(messages[s:e]) for s, e in dropped_ranges)
+        digest_text = _digest(digest_lines) if digest_lines else ""
+        inserted = bool(digest_text and len(digest_text) < dropped_chars)
+        if inserted:
+            candidate.append(_make_user_message(digest_text))
+        for start, end in kept_ranges:
+            candidate.extend(messages[start:end])
+        return candidate, dropped_ranges, inserted
+
+    # Find the largest recent tail that satisfies both budgets. The actual
+    # digest is counted, so a token budget cannot be exceeded by its summary.
+    floor = min(len(ranges), max(0, min_tail_steps))
+    chosen: tuple[list, list[tuple[int, int]], bool] | None = None
+    for keep_count in range(len(ranges) - 1, floor - 1, -1):
+        candidate, dropped_ranges, inserted = build_candidate(keep_count)
+        candidate_tokens = counter(candidate) if counter else None
+        if count_chars(candidate) <= max_chars and (
+            max_tokens is None or candidate_tokens is None or candidate_tokens <= max_tokens
         ):
+            chosen = (candidate, dropped_ranges, inserted)
             break
-        keep_count -= 1
-    dropped = ranges[:-keep_count] if keep_count < len(ranges) else []
+    if chosen is None and floor < len(ranges):
+        chosen = build_candidate(floor)
+    if chosen is None:
+        stats["status"] = "over_budget_uncompressible"
+        return messages, stats
+
+    kept_msgs, dropped, inserted = chosen
     if not dropped:
         # 历史太短（步数不大于 min_tail）无法安全折叠——保持原样，不算触发压缩
+        stats["status"] = "over_budget_uncompressible"
         return messages, stats
-    kept_ranges = ranges[-keep_count:] if keep_count else []
-
-    kept_msgs: list = list(messages[:prelude])
-    digest_lines = [_step_digest(messages, start, end) for start, end in dropped]
-    # 摘要只在「确实比被丢内容更小」时插入——否则宁可不摘要（纯截断），避免把小步越压越大
-    dropped_chars = sum(count_chars(messages[s:e]) for s, e in dropped)
-    digest_text = _digest(digest_lines) if digest_lines else ""
-    inserted = bool(digest_text and len(digest_text) < dropped_chars)
-    if inserted:
-        kept_msgs.append(_make_user_message(digest_text))
-    for start, end in kept_ranges:
-        kept_msgs.extend(messages[start:end])
 
     out_chars = count_chars(kept_msgs)
     out_tokens = counter(kept_msgs) if counter else None
@@ -205,10 +226,15 @@ def compact_messages(
     stats.update(
         {
             "compressed": True,
+            "status": (
+                "compressed"
+                if out_chars <= max_chars and (max_tokens is None or out_tokens is None or out_tokens <= max_tokens)
+                else "over_budget_uncompressible"
+            ),
             "out_chars": out_chars,
             "saved_chars": max(0, in_chars - out_chars),
             "dropped_steps": len(dropped),
-            "kept_steps": len(kept_ranges),
+            "kept_steps": len(ranges) - len(dropped),
             "boundary_is_assistant": boundary_is_assistant,
             "out_tokens": out_tokens,
         }

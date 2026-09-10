@@ -25,6 +25,7 @@ class ModelConfig:
     max_steps: int = 20
     max_context_chars: int = 45000
     max_context_tokens: int | None = None
+    tokenizer: str = "auto"
     context_min_tail: int = 4
     sandbox_whitelist: str = ""        # 逗号分隔，空=不启用白名单
     sandbox_denylist: str = ""         # 逗号分隔，追加到默认拒绝首 token 列表
@@ -81,12 +82,13 @@ def load_config() -> ModelConfig:
         temperature=float(os.environ.get("HARNESS_LLM_TEMPERATURE", "0.0")),
         max_steps=int(os.environ.get("HARNESS_MAX_STEPS", "20")),
         max_context_chars=int(os.environ.get("HARNESS_MAX_CONTEXT_CHARS", "45000")),
-        context_min_tail=int(os.environ.get("HARNESS_CONTEXT_MIN_TAIL", "4")),
         max_context_tokens=(
             int(os.environ["HARNESS_MAX_CONTEXT_TOKENS"])
             if os.environ.get("HARNESS_MAX_CONTEXT_TOKENS")
             else None
         ),
+        tokenizer=os.environ.get("HARNESS_TOKENIZER", "auto"),
+        context_min_tail=int(os.environ.get("HARNESS_CONTEXT_MIN_TAIL", "4")),
         sandbox_whitelist=os.environ.get("HARNESS_SANDBOX_WHITELIST", ""),
         sandbox_denylist=os.environ.get("HARNESS_SANDBOX_DENYLIST", ""),
         sandbox_deny_patterns=os.environ.get("HARNESS_SANDBOX_DENY_PATTERNS", ""),

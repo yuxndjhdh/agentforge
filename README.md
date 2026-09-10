@@ -28,6 +28,7 @@ copy .env.example .env
 ```bash
 .venv/Scripts/python -m agentforge eval --trials 2 --k 1
 .venv/Scripts/python -m agentforge benchmark --trials 1 --k 1
+.venv/Scripts/python -m agentforge sandbox diagnose
 ```
 
 `benchmark` 使用 23 个固定 seed 任务，报告写入 `runs/benchmarks/latest/report.json`，其中包含模型、版本、实验配置、任务规格、完整 episode、失败 trace、pass@1/pass@k、p50/p95 延迟、步数、token、估算成本和失败类型。没有配置单价时成本记录为 0，不会用估算值冒充真实账单。
@@ -43,7 +44,8 @@ agentforge/
   tools.py       文件、grep、命令、记忆工具
   sandbox.py     策略、进程组、超时、输出限制
   container_sandbox.py  Docker/Podman 适配
-  memory.py      working/daily/durable 数据和审计
+  memory.py      durable/daily/run-local 数据和审计
+  tokenizer.py   provider tokenizer 与字符预算 fallback
   trace.py       原子 trace 导出与渲染
 ```
 
@@ -92,6 +94,7 @@ pass@k = 1 - C(N - c, k) / C(N, k)
 - 容器默认非 root、无网络、只读根文件系统、仅挂载工作目录、丢弃 capabilities，并限制 CPU、内存、PID、临时目录和磁盘配额。
 - 子进程环境会清理 API key、token、secret、password、Docker socket/context、Kubeconfig 等变量。命令策略决策会记录策略版本、允许/拒绝结果和原因。
 - durable memory 是不可信数据，使用 JSON 编码和边界标记注入；`instruction` 类型不会自动注入系统提示。记忆支持 scope、覆盖、删除、导出和审计。
+- `project_id`、`user_id` 和 `run_id` 都参与记忆隔离；`run-local` 使用独立目录，不能被其他 run 查询或覆盖。上下文压缩优先使用 `tiktoken`，缺失时明确标记 `chars-div-4` 估算。
 
 本地 fallback 不是内核级隔离；不可信代码的生产执行必须配置可用的 Docker/Podman 或外部沙箱。威胁模型和运行手册见 `docs/THREAT_MODEL.md` 与 `docs/RUNBOOK.md`。
 
@@ -104,4 +107,4 @@ pass@k = 1 - C(N - c, k) / C(N, k)
 
 CI 执行 lint、类型检查、覆盖率、单元测试和安全回归。直接依赖版本记录在 `requirements.lock`；发布元数据在 `pyproject.toml`。
 
-当前交付基线已实际验证：60 个测试通过、1 个平台限制用例跳过，覆盖率 63%；`ruff check agentforge tests`、`mypy agentforge`、`selftest`、`compileall` 和 FastAPI 提交/查询/trace/取消 smoke test 均通过。
+当前工作区已实际验证：86 个测试通过、4 个平台/环境限制用例跳过；`ruff check agentforge tests`、`mypy agentforge`、`compileall` 和 FastAPI smoke test 均通过。Docker/Podman live 安全验收需在 Linux CI 执行，结果见 `docs/SECURITY_REPORT.md`；memory/context 证据见 `docs/MEMORY_CONTEXT_REPORT.md`。

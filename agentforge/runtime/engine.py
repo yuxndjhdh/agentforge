@@ -50,6 +50,7 @@ class RuntimeContext:
     active_tool_calls: dict[str, ToolCall] = field(default_factory=dict)
     state: dict[str, Any] = field(default_factory=dict)
     restored_state: dict[str, Any] = field(default_factory=dict)
+    compression: list[dict[str, Any]] = field(default_factory=list)
     timed_out: bool = False
     closed: bool = False
 
@@ -504,6 +505,7 @@ class AgentRuntime:
             status=stored_run.status.value,
             attempt_id=attempt.id,
             steps=context.trace_steps,
+            compression=context.compression,
             events=self.store.events.read(run.id),
         )
         trace_path = trace.dump(self.trace_root / run.id / "trace.json")
@@ -558,6 +560,10 @@ class AgentRuntime:
             finally:
                 new_steps = self._agent_steps(built_agent, before)
                 context.trace_steps.extend(new_steps)
+                model = getattr(built_agent, "model", None)
+                compressions = getattr(model, "compressions", None)
+                if isinstance(compressions, list):
+                    context.compression = [item for item in compressions if isinstance(item, dict)]
                 self._persist_agent_steps(context, new_steps)
             return output
 

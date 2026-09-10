@@ -10,6 +10,7 @@ import time
 
 from .config import ModelConfig
 from .context import compact_messages
+from .tokenizer import build_token_counter
 
 try:
     from smolagents import OpenAIServerModel
@@ -54,6 +55,8 @@ class CompactingModel(OpenAICompatServerModel):
         max_context_chars: int,
         context_min_tail: int,
         max_context_tokens: int | None = None,
+        token_counter=None,
+        tokenizer_metadata: dict | None = None,
         llm_retries: int = 2,
         llm_backoff: float = 0.5,
         **kwargs,
@@ -64,6 +67,8 @@ class CompactingModel(OpenAICompatServerModel):
         self.max_context_chars = max_context_chars
         self.context_min_tail = context_min_tail
         self.max_context_tokens = max_context_tokens
+        self.token_counter = token_counter
+        self.tokenizer_metadata = dict(tokenizer_metadata or {})
         self.compressions: list[dict] = []  # 每次实际触发的压缩统计
 
     def generate(
@@ -78,7 +83,10 @@ class CompactingModel(OpenAICompatServerModel):
             messages,
             self.max_context_chars,
             self.context_min_tail,
+            token_counter=self.token_counter,
             max_tokens=self.max_context_tokens,
+            tokenizer_name=self.tokenizer_metadata.get("name"),
+            tokenizer_estimated=self.tokenizer_metadata.get("estimated"),
         )
         if stats["compressed"]:
             self.compressions.append(stats)
@@ -112,6 +120,7 @@ def build_model(cfg: ModelConfig):
         raise RuntimeError('需要安装 smolagents：pip install "smolagents[openai]"') from _IMPORT_ERROR
     if not cfg.api_key:
         raise ValueError("缺少 HARNESS_LLM_KEY（DeepSeek key 或网关 token）。")
+    token_counter, tokenizer_metadata = build_token_counter(cfg.model, cfg.tokenizer)
     return CompactingModel(
         model_id=cfg.model,
         api_base=cfg.base_url,
@@ -120,6 +129,8 @@ def build_model(cfg: ModelConfig):
         max_context_chars=cfg.max_context_chars,
         context_min_tail=cfg.context_min_tail,
         max_context_tokens=cfg.max_context_tokens,
+        token_counter=token_counter,
+        tokenizer_metadata=tokenizer_metadata,
         llm_retries=cfg.llm_retries,
         llm_backoff=cfg.llm_backoff,
         retry=False,

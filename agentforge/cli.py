@@ -112,7 +112,7 @@ def cmd_serve(args) -> None:
 def cmd_memory(args) -> None:
     from .memory import MemoryStore
 
-    store = MemoryStore(args.repo, project_id=args.project, user_id=args.user)
+    store = MemoryStore(args.repo, project_id=args.project, user_id=args.user, run_id=args.run_id)
     if args.memory_cmd == "delete":
         print(store.delete(args.tier, args.key))
     elif args.memory_cmd == "export":
@@ -211,9 +211,10 @@ def main(argv=None) -> int:
     p_memory.add_argument("repo", help="仓库路径")
     p_memory.add_argument("--project", default="default")
     p_memory.add_argument("--user", default="default")
+    p_memory.add_argument("--run-id", default=None, help="run-local 记忆作用域")
     memory_sub = p_memory.add_subparsers(dest="memory_cmd", required=True)
     p_delete = memory_sub.add_parser("delete", help="删除一条记忆")
-    p_delete.add_argument("tier", choices=("durable", "daily"))
+    p_delete.add_argument("tier", choices=("durable", "daily", "run-local"))
     p_delete.add_argument("key")
     p_delete.set_defaults(fn=cmd_memory)
     p_export = memory_sub.add_parser("export", help="导出记忆")

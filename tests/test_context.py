@@ -128,3 +128,60 @@ def test_only_prelude_no_steps_returns_as_is():
     out, stats = compact_messages(msgs, max_chars=1, min_tail_steps=2)
     assert stats["compressed"] is False
     assert out is msgs
+
+
+def test_token_budget_has_explicit_source_and_priority():
+    msgs = _make_steps(12, obs_len=300)
+
+    def counter(values):
+        return count_chars(values)
+
+    out, stats = compact_messages(
+        msgs,
+        max_chars=10_000,
+        min_tail_steps=3,
+        token_counter=counter,
+        max_tokens=3_000,
+        tokenizer_name="test-provider",
+        tokenizer_estimated=False,
+    )
+    assert stats["budget_source"] == "tokens"
+    assert stats["tokenizer"] == "test-provider"
+    assert stats["token_estimated"] is False
+    assert stats["in_tokens"] == count_chars(msgs)
+    assert stats["out_tokens"] == count_chars(out)
+
+
+def test_char_fallback_is_marked_as_estimated():
+    msgs = _make_steps(2)
+    _, stats = compact_messages(msgs, max_chars=10_000, max_tokens=10)
+    assert stats["budget_source"] == "tokens"
+    assert stats["tokenizer"] == "chars-div-4"
+    assert stats["token_estimated"] is True
+
+
+def test_over_budget_without_safe_tail_is_explicit():
+    msgs = [_system("x" * 100), _user("task"), _assistant("only step")]
+    out, stats = compact_messages(msgs, max_chars=10, min_tail_steps=1)
+    assert out is msgs
+    assert stats["compressed"] is False
+    assert stats["status"] == "over_budget_uncompressible"
+
+
+def test_token_budget_counts_inserted_digest():
+    msgs = _make_steps(12, obs_len=400)
+
+    def counter(values):
+        return count_chars(values)
+
+    _, stats = compact_messages(
+        msgs,
+        max_chars=10_000,
+        min_tail_steps=3,
+        token_counter=counter,
+        max_tokens=2_500,
+        tokenizer_name="test-provider",
+        tokenizer_estimated=False,
+    )
+    assert stats["compressed"] is True
+    assert stats["out_tokens"] <= 2_500 or stats["status"] == "over_budget_uncompressible"

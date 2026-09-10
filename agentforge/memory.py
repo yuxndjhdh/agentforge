@@ -13,14 +13,20 @@ import re
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import date
 from typing import Any
 
+if os.name == "nt":  # pragma: no cover - exercised by Windows integration runs
+    import msvcrt
+else:  # pragma: no cover - Windows branch is covered on Windows CI
+    import fcntl
+
 MEMORY_DIR = ".agentforge/memory"
-TIERS = ("durable", "daily")
+TIERS = ("durable", "daily", "run-local")
 MEMORY_KINDS = ("fact", "note", "instruction")
-MEMORY_SCHEMA_VERSION = 2
+MEMORY_SCHEMA_VERSION = 3
 
 _CONTENT_MAX = 4000
 _SEARCH_LIMIT = 20
@@ -29,10 +35,47 @@ _DURABLE_INJECT_MAX_ENTRIES = 30
 _DURABLE_INJECT_MAX_CHARS = 5000
 _DATE_RE = re.compile(r"^daily-(\d{4}-\d{2}-\d{2})\.json$")
 _SAFE_SCOPE = re.compile(r"[^A-Za-z0-9_.-]+")
+_LOCKS: dict[str, threading.RLock] = {}
+_LOCKS_GUARD = threading.Lock()
 
 
 def _now_ts() -> float:
     return time.time()
+
+
+def _thread_lock(key: str) -> threading.RLock:
+    normalized = os.path.realpath(key)
+    with _LOCKS_GUARD:
+        lock = _LOCKS.get(normalized)
+        if lock is None:
+            lock = threading.RLock()
+            _LOCKS[normalized] = lock
+        return lock
+
+
+@contextmanager
+def _process_lock(path: str):
+    """Serialize read-modify-write memory updates across processes."""
+    parent = os.path.dirname(path)
+    os.makedirs(parent, exist_ok=True)
+    with open(path, "a+b") as stream:
+        if os.name == "nt":
+            stream.seek(0, os.SEEK_END)
+            if stream.tell() == 0:
+                stream.write(b"0")
+                stream.flush()
+            stream.seek(0)
+            msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)  # type: ignore[attr-defined]
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
 
 
 @dataclass
@@ -53,7 +96,8 @@ class MemoryStore:
     """按工作目录和可选 scope 管理分层 JSON 记忆。
 
     不传 scope 时沿用 ``.agentforge/memory/durable.json`` 的旧路径，以兼容
-    已有项目；传入 project/user scope 后使用隔离的子目录。
+    已有项目；传入 project/user scope 后使用隔离的子目录。``run-local``
+    还会按 run ID 使用独立目录，不能被另一个 run 搜索或覆盖。
     """
 
     def __init__(
@@ -65,19 +109,41 @@ class MemoryStore:
         run_id: str | None = None,
     ):
         self.workdir = os.path.realpath(workdir)
+        project_id = str(project_id)
+        user_id = str(user_id)
+        run_id = str(run_id) if run_id is not None else None
+        if not project_id.strip() or not user_id.strip():
+            raise ValueError("project_id and user_id must not be empty")
+        if run_id is not None and not str(run_id).strip():
+            raise ValueError("run_id must not be empty")
         base = os.path.join(self.workdir, MEMORY_DIR)
         if project_id != "default" or user_id != "default":
             scope = _scope_name(project_id, user_id)
             base = os.path.join(base, "scopes", scope)
         self.root = base
+        self._lock = _thread_lock(self.root)
+        self._lock_path = os.path.join(self.root, ".memory.lock")
         self.durable_path = os.path.join(self.root, "durable.json")
         self.project_id = project_id
         self.user_id = user_id
         self.run_id = run_id
-        self._lock = threading.RLock()
 
     def _daily_path(self) -> str:
         return os.path.join(self.root, f"daily-{date.today().isoformat()}.json")
+
+    def _run_root(self) -> str:
+        if self.run_id is None:
+            raise ValueError("run-local memory requires run_id")
+        return os.path.join(self.root, "runs", _safe_component(self.run_id))
+
+    def _path(self, tier: str) -> str:
+        if tier == "durable":
+            return self.durable_path
+        if tier == "daily":
+            return self._daily_path()
+        if tier == "run-local":
+            return os.path.join(self._run_root(), "run-local.json")
+        raise ValueError(f"unknown memory tier: {tier}")
 
     def _audit_path(self) -> str:
         return os.path.join(self.root, "audit.jsonl")
@@ -107,6 +173,18 @@ class MemoryStore:
             meta.setdefault("version", MEMORY_SCHEMA_VERSION)
             out[str(key)] = meta
         return out
+
+    def _visible(self, tier: str, raw: dict) -> bool:
+        stored_project = raw.get("project_id", "default")
+        stored_user = raw.get("user_id", "default")
+        if str(stored_project) != str(self.project_id) or str(stored_user) != str(self.user_id):
+            return False
+        if tier == "run-local":
+            return self.run_id is not None and str(raw.get("run_id")) == str(self.run_id)
+        return True
+
+    def _read_visible(self, path: str, tier: str) -> dict[str, dict]:
+        return {key: raw for key, raw in self._read(path).items() if self._visible(tier, raw)}
 
     def _write(self, path: str, data: dict[str, dict]) -> None:
         """原子替换，避免进程中断留下半个 JSON。"""
@@ -163,22 +241,33 @@ class MemoryStore:
             return f"Error: 未知 kind {kind!r}（可选 {MEMORY_KINDS}）"
         if not isinstance(content, str):
             return "Error: content 必须是字符串"
+        if project_id is not None and str(project_id) != self.project_id:
+            return "Error: project scope cannot be overridden"
+        if user_id is not None and str(user_id) != self.user_id:
+            return "Error: user scope cannot be overridden"
+        if run_id is not None and str(run_id) != str(self.run_id):
+            return "Error: run scope cannot be overridden"
+        if tier == "run-local" and self.run_id is None:
+            return "Error: run-local memory requires run_id"
         clean_key = key.strip()
         if "\x00" in clean_key or "\x00" in content:
             return "Error: memory cannot contain NUL"
-        path = self.durable_path if tier == "durable" else self._daily_path()
-        with self._lock:
-            data = self._read(path)
-            previous = data.get(clean_key)
+        path = self._path(tier)
+        with self._lock, _process_lock(self._lock_path):
+            raw_data = self._read(path)
+            visible = {key: raw for key, raw in raw_data.items() if self._visible(tier, raw)}
+            previous = visible.get(clean_key)
             version = int(previous.get("version", 0)) + 1 if previous else 1
+            stored_run_id = self.run_id if tier == "run-local" else None
+            data = dict(raw_data)
             data[clean_key] = {
                 "content": content[:_CONTENT_MAX],
                 "updated": _now_ts(),
                 "kind": kind,
                 "source": str(source)[:200],
-                "project_id": project_id or self.project_id,
-                "run_id": run_id if run_id is not None else self.run_id,
-                "user_id": user_id or self.user_id,
+                "project_id": self.project_id,
+                "run_id": stored_run_id,
+                "user_id": self.user_id,
                 "version": version,
             }
             self._write(path, data)
@@ -194,8 +283,10 @@ class MemoryStore:
     def get(self, tier: str, key: str) -> MemoryEntry | None:
         if tier not in TIERS:
             return None
-        path = self.durable_path if tier == "durable" else self._daily_path()
-        raw = self._read(path).get(key)
+        if tier == "run-local" and self.run_id is None:
+            return None
+        path = self._path(tier)
+        raw = self._read_visible(path, tier).get(key)
         return self._entry(tier, key, raw) if raw else None
 
     def list_entries(self, tier: str | None = None) -> list[MemoryEntry]:
@@ -204,11 +295,13 @@ class MemoryStore:
         for current in tiers:
             if current not in TIERS:
                 continue
-            paths = [self.durable_path] if current == "durable" else [
-                path for _, path in self._files() if _ == "daily"
+            if current == "run-local" and self.run_id is None:
+                continue
+            paths = [self._path(current)] if current != "daily" else [
+                path for item_tier, path in self._files() if item_tier == "daily"
             ]
             for path in paths:
-                for key, raw in self._read(path).items():
+                for key, raw in self._read_visible(path, current).items():
                     entry = self._entry(current, key, raw)
                     if entry:
                         entries.append(entry)
@@ -217,11 +310,15 @@ class MemoryStore:
     def delete(self, tier: str, key: str) -> str:
         if tier not in TIERS:
             return f"Error: 未知 tier {tier!r}（可选 {TIERS}）"
-        path = self.durable_path if tier == "durable" else self._daily_path()
-        with self._lock:
-            data = self._read(path)
-            if key not in data:
+        if tier == "run-local" and self.run_id is None:
+            return "Error: run-local memory requires run_id"
+        path = self._path(tier)
+        with self._lock, _process_lock(self._lock_path):
+            raw_data = self._read(path)
+            visible = {item_key: raw for item_key, raw in raw_data.items() if self._visible(tier, raw)}
+            if key not in visible:
                 return f"Error: memory not found: {tier}/{key}"
+            data = dict(raw_data)
             del data[key]
             self._write(path, data)
             self._record_audit("delete", tier=tier, key=key)
@@ -239,7 +336,7 @@ class MemoryStore:
         if limit < 1:
             return []
         try:
-            with open(self._audit_path(), encoding="utf-8") as stream:
+            with self._lock, _process_lock(self._lock_path), open(self._audit_path(), encoding="utf-8") as stream:
                 lines = stream.readlines()[-limit:]
         except OSError:
             return []
@@ -249,9 +346,18 @@ class MemoryStore:
                 item = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(item, dict):
+            if isinstance(item, dict) and self._audit_visible(item):
                 out.append(item)
         return out
+
+    def _audit_visible(self, item: dict[str, Any]) -> bool:
+        if str(item.get("project_id", "default")) != str(self.project_id):
+            return False
+        if str(item.get("user_id", "default")) != str(self.user_id):
+            return False
+        if item.get("tier") == "run-local":
+            return self.run_id is not None and str(item.get("run_id")) == str(self.run_id)
+        return True
 
     def search(self, query: str, limit: int = _SEARCH_LIMIT) -> str:
         needle = query.strip().lower()
@@ -342,6 +448,11 @@ class MemoryStore:
 def _scope_name(project_id: str, user_id: str) -> str:
     raw = f"{project_id}--{user_id}"
     return _SAFE_SCOPE.sub("_", raw)[:180] or "default"
+
+
+def _safe_component(value: str) -> str:
+    clean = _SAFE_SCOPE.sub("_", str(value)).strip("._")
+    return clean[:180] or "default"
 
 
 def memory_instructions(workdir: str, *, project_id: str = "default", user_id: str = "default") -> str:

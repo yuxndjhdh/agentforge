@@ -257,7 +257,10 @@ class MemorySaveTool(_CodeTool):
 
 class MemorySearchTool(_CodeTool):
     name = "memory_search"
-    description = "在分层记忆库按关键词搜索（durable + 全部 daily），返回 'key: 内容片段'，无命中则说明。"
+    description = (
+        "在当前 project/user/run scope 的 durable、daily 和 run-local 记忆中按关键词搜索，"
+        "返回 'key: 内容片段'，无命中则说明。"
+    )
     inputs = {"query": {"type": "string", "description": "要搜索的关键词"}}
 
     def forward(self, query: str) -> str:

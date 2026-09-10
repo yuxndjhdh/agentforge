@@ -196,39 +196,39 @@ T2 完成门槛：
 
 ### T3-01 完成作用域模型
 
-- [ ] 明确 durable、daily 和 run-local 三类数据的生命周期。
-- [ ] project、user、run 三个维度真正参与存储或查询隔离。
-- [ ] 当前 `run_id` 不能只作为 metadata 保存。
-- [ ] 禁止一个 scope 读取或覆盖另一个 scope 的记忆。
-- [ ] 增加 scope 迁移和旧格式兼容测试。
+- [x] 明确 durable、daily 和 run-local 三类数据的生命周期。
+- [x] project、user、run 三个维度真正参与存储或查询隔离。
+- [x] 当前 `run_id` 不能只作为 metadata 保存。
+- [x] 禁止一个 scope 读取或覆盖另一个 scope 的记忆。
+- [x] 增加 scope 迁移和旧格式兼容测试。
 
 ### T3-02 提示注入防护验证
 
-- [ ] 为 durable memory 编写恶意指令样本。
-- [ ] 验证 `instruction` 类型不会自动注入。
-- [ ] 验证标签、换行、伪 system prompt 和工具调用文本均保持数据语义。
-- [ ] 在 Agent 集成测试中验证安全策略不会被恶意记忆覆盖。
-- [ ] 文档中避免使用“绝对安全”，明确模型层防护的局限。
+- [x] 为 durable memory 编写恶意指令样本。
+- [x] 验证 `instruction` 类型不会自动注入。
+- [x] 验证标签、换行、伪 system prompt 和工具调用文本均保持数据语义。
+- [x] 在 Agent 集成测试中验证安全策略不会被恶意记忆覆盖。
+- [x] 文档中避免使用“绝对安全”，明确模型层防护的局限。
 
 ### T3-03 记忆功能测试
 
-- [ ] 覆盖 save、overwrite、delete、export、audit、version。
-- [ ] 覆盖相关性排序和更新时间排序。
-- [ ] 覆盖并发写入与原子替换。
-- [ ] 覆盖损坏 JSON 和损坏 audit 尾行恢复。
+- [x] 覆盖 save、overwrite、delete、export、audit、version。
+- [x] 覆盖相关性排序和更新时间排序。
+- [x] 覆盖并发写入与原子替换。
+- [x] 覆盖损坏 JSON 和损坏 audit 尾行恢复。
 
 ### T3-04 Token 预算接口
 
-- [ ] 接入至少一个真实 provider tokenizer 或明确的 tokenizer adapter。
-- [ ] 字符预算作为 fallback，并在 trace 中标记估算方式。
-- [ ] 验证字符预算和 token 预算同时存在时的优先级。
-- [ ] 增加超预算但不可安全压缩时的明确状态。
+- [x] 接入至少一个真实 provider tokenizer 或明确的 tokenizer adapter。
+- [x] 字符预算作为 fallback，并在 trace 中标记估算方式。
+- [x] 验证字符预算和 token 预算同时存在时的优先级。
+- [x] 增加超预算但不可安全压缩时的明确状态。
 
 T3 完成门槛：
 
-- [ ] memory 新增能力都有自动测试，而不是只由实现代码覆盖。
-- [ ] 恶意 durable 样例不能改变工具权限或系统策略。
-- [ ] context/memory 报告能说明预算来源和信任边界。
+- [x] memory 新增能力都有自动测试，而不是只由实现代码覆盖。
+- [x] 恶意 durable 样例不能改变工具权限或系统策略。
+- [x] context/memory 报告能说明预算来源和信任边界（见 `docs/MEMORY_CONTEXT_REPORT.md`）。
 
 ---
 
@@ -437,3 +437,4 @@ docker version
 | --- | --- | --- | --- |
 |  |  |  |  |
 | 2026-09-10 | T2-01~T2-05 | `6ff3300`; `docs/SECURITY_REPORT.md` | 容器诊断、digest pin、auto 回退 trace、fail-closed 和 Linux Docker CI 已实现；当前 Windows 无 Docker/Podman，storage quota 与 live 攻击验收保留阻塞。 |
+| 2026-09-10 | T3-01~T3-04 | 待提交; `docs/MEMORY_CONTEXT_REPORT.md` | 完成 project/user/run-local 隔离、并发与损坏恢复、恶意记忆边界、tiktoken/字符 fallback 和预算 trace。 |

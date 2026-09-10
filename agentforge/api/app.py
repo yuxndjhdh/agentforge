@@ -9,9 +9,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+from ..benchmark import public_config
+from ..benchmark_store import BenchmarkStore
 from ..config import ModelConfig, load_config
-from ..observability import MetricsRegistry
-from ..runtime import AgentRuntime, RuntimeStore
+from ..observability import MetricsRegistry, configure_tracing
+from ..runtime import AgentRuntime, RunStatus, RuntimeStore
 
 try:
     from fastapi import FastAPI, HTTPException
@@ -48,19 +50,28 @@ class BenchmarkRequest(BaseModel):
 class RunService:
     def __init__(self, cfg: ModelConfig):
         self.cfg = cfg
+        configure_tracing()
         self.runtime = AgentRuntime(
             RuntimeStore(cfg.state_db, cfg.trace_dir),
             trace_root=cfg.trace_dir,
         )
         self.runtime.store.recover_stale_runs()
+        self.benchmark_store = BenchmarkStore(cfg.state_db)
+        self.benchmark_store.recover_running()
         self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="agentforge")
-        self.benchmarks: dict[str, dict[str, Any]] = {}
         self.metrics = MetricsRegistry()
         self._lock = threading.RLock()
+        self._resume_pending: set[str] = set()
+        self._closed = False
 
     def close(self) -> None:
-        self.pool.shutdown(wait=False, cancel_futures=True)
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        self.pool.shutdown(wait=True, cancel_futures=True)
         self.runtime.store.close()
+        self.benchmark_store.close()
 
     def submit(self, request: RunCreateRequest) -> dict[str, Any]:
         workdir = _validate_workdir(request.repo)
@@ -89,7 +100,7 @@ class RunService:
                 user_id=request.user_id,
                 max_duration=request.max_duration,
             )
-            self.metrics.inc("agentforge_runs_total", status=result.run.status.value)
+            self._record_run_metrics(result.run.id, result.run.status.value, result.attempt.id)
         except Exception:
             self.metrics.inc("agentforge_runs_total", status="failed")
         finally:
@@ -97,6 +108,28 @@ class RunService:
                 "agentforge_run_duration_seconds",
                 __import__("time").perf_counter() - started,
             )
+
+    def _record_run_metrics(self, run_id: str, status: str, attempt_id: str | None = None) -> None:
+        self.metrics.inc("agentforge_runs_total", status=status)
+        for event in self.runtime.store.events.read(run_id):
+            if attempt_id is not None and event.get("attempt_id") != attempt_id:
+                continue
+            event_type = str(event.get("type", ""))
+            payload = event.get("payload") or {}
+            if event_type == "tool_call.completed":
+                self.metrics.inc(
+                    "agentforge_tool_calls_total",
+                    status="failed" if payload.get("error") else "succeeded",
+                )
+            elif event_type == "llm.retry":
+                self.metrics.inc("agentforge_llm_retries_total")
+            elif event_type == "policy.decision" and payload.get("allowed") is False:
+                self.metrics.inc("agentforge_sandbox_rejections_total")
+            elif event_type == "verification.completed":
+                self.metrics.inc(
+                    "agentforge_verifications_total",
+                    status="passed" if payload.get("reward") else "failed",
+                )
 
     def benchmark(self, request: BenchmarkRequest) -> dict[str, Any]:
         from ..benchmark import run_benchmark
@@ -113,9 +146,9 @@ class RunService:
             "k": request.k,
             "seed": request.seed,
             "tasks": [task.name for task in tasks],
+            "config": public_config(self.cfg),
         }
-        with self._lock:
-            self.benchmarks[benchmark_id] = record
+        self.benchmark_store.create(record)
 
         def worker() -> None:
             try:
@@ -127,14 +160,80 @@ class RunService:
                     seed=request.seed,
                     out_dir=Path(self.cfg.trace_dir) / "benchmarks" / benchmark_id,
                 )
-                with self._lock:
-                    record.update(result, status="succeeded")
+                self.benchmark_store.update(
+                    benchmark_id,
+                    status="succeeded",
+                    report_path=result.get("report_path"),
+                )
             except Exception as exc:
-                with self._lock:
-                    record.update(status="failed", error=f"{type(exc).__name__}: {exc}")
+                self.benchmark_store.update(
+                    benchmark_id,
+                    status="failed",
+                    error=f"{type(exc).__name__}: {exc}",
+                )
 
         self.pool.submit(worker)
-        return record.copy()
+        return self.benchmark_store.get(benchmark_id) or record
+
+    def get_benchmark(self, benchmark_id: str) -> dict[str, Any] | None:
+        return self.benchmark_store.get(benchmark_id)
+
+    def resume(self, run_id: str) -> dict[str, Any]:
+        with self._lock:
+            if run_id in self._resume_pending:
+                raise ValueError(f"run {run_id} already has a resume in progress")
+            run = self.runtime.store.get_run(run_id)
+            if run is None:
+                raise KeyError("run not found")
+            if run.status not in {RunStatus.FAILED, RunStatus.CANCELLED}:
+                raise ValueError(f"run {run_id} is not resumable from status {run.status.value}")
+            self._resume_pending.add(run_id)
+        existing = self.runtime.store.list_attempts(run_id)
+        holder: dict[str, Any] = {}
+        ready = threading.Event()
+
+        def on_attempt(attempt) -> None:
+            holder["attempt_id"] = attempt.id
+            ready.set()
+
+        def worker() -> None:
+            started = __import__("time").perf_counter()
+            try:
+                result = self.runtime.run_agent(
+                    self.cfg,
+                    run.task,
+                    run.workdir,
+                    run_id=run.id,
+                    project_id=run.project_id,
+                    user_id=run.user_id,
+                    reset=False,
+                    max_duration=run.max_duration,
+                    attempt_callback=on_attempt,
+                )
+                self._record_run_metrics(result.run.id, result.run.status.value, result.attempt.id)
+            except Exception:
+                self.metrics.inc("agentforge_runs_total", status="failed")
+            finally:
+                self.metrics.observe(
+                    "agentforge_run_duration_seconds",
+                    __import__("time").perf_counter() - started,
+                )
+                with self._lock:
+                    self._resume_pending.discard(run_id)
+
+        try:
+            self.pool.submit(worker)
+        except Exception:
+            with self._lock:
+                self._resume_pending.discard(run_id)
+            raise
+        ready.wait(timeout=2.0)
+        current = self.runtime.store.get_run(run_id) or run
+        result = _run_json(current)
+        result["resumed"] = True
+        result["previous_attempt_count"] = len(existing)
+        result["attempt_id"] = holder.get("attempt_id")
+        return result
 
 
 def create_app(cfg: ModelConfig | None = None, service: RunService | None = None):
@@ -203,11 +302,19 @@ def create_app(cfg: ModelConfig | None = None, service: RunService | None = None
 
     @app.get("/benchmarks/{benchmark_id}")
     def get_benchmark(benchmark_id: str):
-        with service._lock:
-            record = service.benchmarks.get(benchmark_id)
+        record = service.get_benchmark(benchmark_id)
         if record is None:
             raise HTTPException(status_code=404, detail="benchmark not found")
         return record
+
+    @app.post("/runs/{run_id}/resume", status_code=202)
+    def resume_run(run_id: str):
+        try:
+            return service.resume(run_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get("/metrics")
     def metrics():
@@ -228,4 +335,5 @@ def _validate_workdir(value: str) -> str:
 def _run_json(run) -> dict[str, Any]:
     record = run.to_record()
     record["status"] = str(record["status"])
+    record["trace_id"] = record.get("metadata", {}).get("trace_id")
     return record

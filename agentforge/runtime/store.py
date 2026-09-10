@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
+from ..observability import current_trace_id
 from .models import (
     CHECKPOINT_SCHEMA_VERSION,
     Attempt,
@@ -499,12 +500,23 @@ class RuntimeStore:
                 "SELECT next_sequence FROM event_counters WHERE run_id = ?", (run_id,)
             ).fetchone()
             sequence = max(int(row["next_sequence"]), existing_max + 1)
+            event_payload = dict(payload or {})
+            trace_id = current_trace_id()
+            if not trace_id:
+                metadata_row = self._connection.execute(
+                    "SELECT metadata_json FROM runs WHERE id = ?", (run_id,)
+                ).fetchone()
+                metadata = _load(metadata_row["metadata_json"], {}) if metadata_row else {}
+                if isinstance(metadata, dict):
+                    trace_id = metadata.get("trace_id")
+            if trace_id and "trace_id" not in event_payload:
+                event_payload["trace_id"] = trace_id
             event = RuntimeEvent.create(
                 run_id,
                 event_type,
                 sequence,
                 attempt_id=attempt_id,
-                payload=payload,
+                payload=event_payload,
             )
             record = self.events.append(event)
             self._connection.execute(

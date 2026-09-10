@@ -299,47 +299,47 @@ T4 完成门槛：
 
 ### T5-01 持久化 Benchmark job
 
-- [ ] 将 benchmark 状态从进程内字典迁移到 SQLite。
-- [ ] 保存 job、配置、任务列表、状态、报告路径和错误。
-- [ ] 服务重启后仍能查询已完成和失败的 benchmark。
-- [ ] 启动时处理遗留 `running` benchmark。
+- [x] 将 benchmark 状态从进程内字典迁移到 SQLite。
+- [x] 保存 job、配置、任务列表、状态、报告路径和错误。
+- [x] 服务重启后仍能查询已完成和失败的 benchmark。
+- [x] 启动时处理遗留 `running` benchmark。
 
 ### T5-02 增加恢复接口
 
-- [ ] 增加 `POST /runs/{id}/resume`。
-- [ ] 只允许可恢复状态调用 resume。
-- [ ] 返回新的 attempt 信息和原 run ID。
-- [ ] 增加并发 resume 冲突测试。
+- [x] 增加 `POST /runs/{id}/resume`。
+- [x] 只允许可恢复状态调用 resume。
+- [x] 返回新的 attempt 信息和原 run ID。
+- [x] 增加并发 resume 冲突测试。
 
 ### T5-03 接入真实 OpenTelemetry
 
-- [ ] 在 run、LLM request、tool call、verification 上创建 span。
-- [ ] 配置可选 OTLP exporter。
-- [ ] trace ID 写入 runtime event 和 API 响应。
-- [ ] 增加 exporter 不可用时的降级行为。
-- [ ] 删除只定义但从未调用的观测接口。
+- [x] 在 run、LLM request、tool call、verification 上创建 span。
+- [x] 配置可选 OTLP exporter。
+- [x] trace ID 写入 runtime event 和 API 响应。
+- [x] 增加 exporter 不可用时的降级行为。
+- [x] 删除只定义但从未调用的观测接口。
 
 ### T5-04 完善 Metrics
 
-- [ ] 增加 run 状态、工具调用、LLM 重试、sandbox 拒绝和 verification 指标。
-- [ ] 增加延迟 histogram，而不只记录 count/sum。
-- [ ] 控制 label cardinality，禁止 run ID 作为 Prometheus label。
-- [ ] 为 `/metrics` 输出增加格式测试。
+- [x] 增加 run 状态、工具调用、LLM 重试、sandbox 拒绝和 verification 指标。
+- [x] 增加延迟 histogram，而不只记录 count/sum。
+- [x] 控制 label cardinality，禁止 run ID 作为 Prometheus label。
+- [x] 为 `/metrics` 输出增加格式测试。
 
 ### T5-05 API 端到端测试
 
-- [ ] 使用 fake LLM/provider 完成真实后台 run，不 mock 掉 `_run`。
-- [ ] 覆盖提交、轮询、trace、取消、失败和恢复。
-- [ ] 覆盖服务关闭并重建后的状态查询。
-- [ ] 覆盖 benchmark 创建、完成、失败和重启查询。
-- [ ] 验证 API 和 CLI 最终使用同一 Runtime 行为。
+- [x] 使用 fake LLM/provider 完成真实后台 run，不 mock 掉 `_run`。
+- [x] 覆盖提交、轮询、trace、取消、失败和恢复。
+- [x] 覆盖服务关闭并重建后的状态查询。
+- [x] 覆盖 benchmark 创建、完成、失败和重启查询。
+- [x] 验证 API 和 CLI 最终使用同一 Runtime 行为。
 
 T5 完成门槛：
 
-- [ ] 服务重启后 run 与 benchmark 都不会丢失。
-- [ ] API 可以恢复中断任务。
-- [ ] OpenTelemetry span 和 Prometheus 指标均来自真实执行路径。
-- [ ] API E2E 测试不绕过 worker。
+- [x] 服务重启后 run 与 benchmark 都不会丢失。
+- [x] API 可以恢复中断任务。
+- [x] OpenTelemetry span 和 Prometheus 指标均来自真实执行路径；OTLP 外部接收端未在本机配置，降级路径有测试。
+- [x] API E2E 测试不绕过 worker。
 
 ---
 
@@ -421,13 +421,11 @@ docker version
 
 ## 12. 当前下一步
 
-严格按以下顺序开始：
+T0～T5 的代码、测试和文档工作已完成。后续只处理外部环境阻塞和发布工程化：
 
-1. T0-01：审核并固化当前 0.2.0 工作区。
-2. T1-01：让 checkpoint state 真正进入恢复执行上下文。
-3. T1-02：实现跨 attempt 的工具调用幂等。
-4. T1-05：用关闭并重建 RuntimeStore 的测试证明恢复有效。
-5. T2-01：准备 Linux Docker 测试环境。
+1. 在配置 `HARNESS_LLM_KEY` 后执行 T4-04 的四组真实 benchmark，并保留完整报告与失败 trace。
+2. 在 Linux Docker CI 中完成 T2 的 live CPU/PID、攻击集和 storage quota 验收。
+3. 按 T6 清单生成完整传递依赖锁、构建产物、发布文档和 release tag。
 
 在这五项完成前，不开始复杂 UI、多 Agent 或额外模型接入。
 
@@ -437,5 +435,6 @@ docker version
 | --- | --- | --- | --- |
 |  |  |  |  |
 | 2026-09-10 | T2-01~T2-05 | `6ff3300`; `docs/SECURITY_REPORT.md` | 容器诊断、digest pin、auto 回退 trace、fail-closed 和 Linux Docker CI 已实现；当前 Windows 无 Docker/Podman，storage quota 与 live 攻击验收保留阻塞。 |
-| 2026-09-10 | T3-01~T3-04 | 待提交; `docs/MEMORY_CONTEXT_REPORT.md` | 完成 project/user/run-local 隔离、并发与损坏恢复、恶意记忆边界、tiktoken/字符 fallback 和预算 trace。 |
-| 2026-09-10 | T4-01~T4-03 | 待提交; `docs/BENCHMARK_TASK_AUDIT.md` | 统一 CLI/API 任务选择，补精确行为验收、seed/config snapshot、fake solver 报告和 pass@1/3/5；真实实验因缺少 `HARNESS_LLM_KEY` 未执行。 |
+| 2026-09-10 | T3-01~T3-04 | `40e3ecf`; `docs/MEMORY_CONTEXT_REPORT.md` | 完成 project/user/run-local 隔离、并发与损坏恢复、恶意记忆边界、tiktoken/字符 fallback 和预算 trace。 |
+| 2026-09-10 | T4-01~T4-03 | `d833357`; `docs/BENCHMARK_TASK_AUDIT.md` | 统一 CLI/API 任务选择，补精确行为验收、seed/config snapshot、fake solver 报告和 pass@1/3/5；真实实验因缺少 `HARNESS_LLM_KEY` 未执行。 |
+| 2026-09-10 | T5-01~T5-05 | 待提交 | Benchmark job SQLite 持久化、run resume API、运行级 trace/可选 OTLP、Prometheus histogram 和真实 worker E2E 已完成；本机未配置外部 OTLP 接收端。 |

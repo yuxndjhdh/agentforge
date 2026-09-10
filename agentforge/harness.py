@@ -45,7 +45,7 @@ def make_agent(
     """
     from smolagents import ToolCallingAgent
 
-    model = build_model(cfg)
+    model = build_model(cfg, event_sink=event_sink)
     sandbox = Sandbox.from_config(cfg)
     sandbox.decision_sink = (
         lambda event: event_sink({"phase": "policy", **event}) if event_sink else None

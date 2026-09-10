@@ -24,11 +24,11 @@ python -m agentforge trace runs/<run-id>/trace.json
 python -m agentforge serve --host 127.0.0.1 --port 8000
 ```
 
-The service stores metadata in `AGENTFORGE_STATE_DB`, events and traces below `AGENTFORGE_TRACE_DIR`, and uses a worker pool for runs. Query `/runs/{id}` after submission; query `/runs/{id}/trace` for the complete event sequence.
+The service stores run and benchmark metadata in `AGENTFORGE_STATE_DB`, events and traces below `AGENTFORGE_TRACE_DIR`, and uses a worker pool for runs. Query `/runs/{id}` after submission; query `/runs/{id}/trace` for the complete event sequence. Benchmark job configuration, task names, report paths, and failures remain queryable after a service restart.
 
 ## Recovery
 
-If a worker exits, inspect the run status and latest complete checkpoint in SQLite. Call the runtime `resume(run_id, executor)` hook or resubmit through an API worker with `resume=True`. A successful run ID is idempotent and is never executed twice.
+If a worker exits, inspect the run status and latest complete checkpoint in SQLite. Call `POST /runs/{id}/resume` for a failed or cancelled run; the response contains the new attempt ID while the original run ID and attempt history are retained. A successful run ID is idempotent and is never executed twice. A resume request already in progress returns HTTP 409.
 
 ## Cleanup
 

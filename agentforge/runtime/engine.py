@@ -8,10 +8,12 @@ import json
 import os
 import threading
 import time
+from contextvars import copy_context
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from ..observability import current_trace_id, trace_span
 from ..trace import RunTrace
 from .models import (
     Attempt,
@@ -48,6 +50,7 @@ class RuntimeContext:
     cancel_event: threading.Event
     trace_steps: list[dict[str, Any]] = field(default_factory=list)
     active_tool_calls: dict[str, ToolCall] = field(default_factory=dict)
+    active_tool_spans: dict[str, Any] = field(default_factory=dict)
     state: dict[str, Any] = field(default_factory=dict)
     restored_state: dict[str, Any] = field(default_factory=dict)
     compression: list[dict[str, Any]] = field(default_factory=list)
@@ -113,15 +116,22 @@ class RuntimeContext:
         previous = self.runtime.store.get_tool_call_by_key(key)
         if previous is not None:
             if previous.status == StepStatus.SUCCEEDED:
-                observation = previous.observation or ""
-                self._remember_tool_observation(key, observation)
-                self.runtime.emit(
-                    self.run.id,
-                    "tool_call.replayed",
+                with trace_span(
+                    "agentforge.tool_call",
+                    run_id=self.run.id,
                     attempt_id=self.attempt.id,
-                    payload={"idempotency_key": key, "tool_call_id": previous.id},
-                )
-                return observation
+                    tool_name=name,
+                    replayed=True,
+                ):
+                    observation = previous.observation or ""
+                    self._remember_tool_observation(key, observation)
+                    self.runtime.emit(
+                        self.run.id,
+                        "tool_call.replayed",
+                        attempt_id=self.attempt.id,
+                        payload={"idempotency_key": key, "tool_call_id": previous.id},
+                    )
+                    return observation
             if not retry_failed:
                 raise ToolCallReplayError(
                     f"tool call {key} is {previous.status.value}; explicit retry is required"
@@ -135,50 +145,57 @@ class RuntimeContext:
             arguments=arguments or {"args": list(args), "kwargs": kwargs},
             idempotency_key=key,
         )
-        self.runtime.store.append_tool_call(call)
-        self.runtime.emit(
-            self.run.id,
-            "tool_call.started",
+        with trace_span(
+            "agentforge.tool_call",
+            run_id=self.run.id,
             attempt_id=self.attempt.id,
-            payload=call.to_record(),
-        )
-        try:
-            result = function(*args, **kwargs)
-        except Exception as exc:
-            call.status = StepStatus.FAILED
+            tool_name=name,
+            replayed=False,
+        ):
+            self.runtime.store.append_tool_call(call)
+            self.runtime.emit(
+                self.run.id,
+                "tool_call.started",
+                attempt_id=self.attempt.id,
+                payload=call.to_record(),
+            )
+            try:
+                result = function(*args, **kwargs)
+            except Exception as exc:
+                call.status = StepStatus.FAILED
+                call.finished_at = time.time()
+                call.error = f"{type(exc).__name__}: {exc}"
+                self.runtime.store.update_tool_call(
+                    call.id,
+                    status=call.status,
+                    finished_at=call.finished_at,
+                    error=call.error,
+                )
+                self.runtime.emit(
+                    self.run.id,
+                    "tool_call.completed",
+                    attempt_id=self.attempt.id,
+                    payload=call.to_record(),
+                )
+                raise
+            observation = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
+            call.status = StepStatus.SUCCEEDED
             call.finished_at = time.time()
-            call.error = f"{type(exc).__name__}: {exc}"
+            call.observation = observation
             self.runtime.store.update_tool_call(
                 call.id,
                 status=call.status,
                 finished_at=call.finished_at,
-                error=call.error,
+                observation=observation,
             )
+            self._remember_tool_observation(key, observation)
             self.runtime.emit(
                 self.run.id,
                 "tool_call.completed",
                 attempt_id=self.attempt.id,
                 payload=call.to_record(),
             )
-            raise
-        observation = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
-        call.status = StepStatus.SUCCEEDED
-        call.finished_at = time.time()
-        call.observation = observation
-        self.runtime.store.update_tool_call(
-            call.id,
-            status=call.status,
-            finished_at=call.finished_at,
-            observation=observation,
-        )
-        self._remember_tool_observation(key, observation)
-        self.runtime.emit(
-            self.run.id,
-            "tool_call.completed",
-            attempt_id=self.attempt.id,
-            payload=call.to_record(),
-        )
-        return result
+            return result
 
     def _completed_tool_observations(self) -> dict[str, str]:
         observations: dict[str, str] = {}
@@ -253,23 +270,29 @@ class RuntimeContext:
         feedback: str = "",
     ) -> Verification:
         self.check_cancelled()
-        verification = Verification.create(
-            self.run.id,
-            self.attempt.id,
-            status=VerificationStatus.PASSED if reward else VerificationStatus.FAILED,
-            finished_at=time.time(),
-            reward=int(reward),
-            checks=checks or [],
-            feedback=feedback,
-        )
-        self.runtime.store.append_verification(verification)
-        self.runtime.emit(
-            self.run.id,
-            "verification.completed",
+        with trace_span(
+            "agentforge.verification",
+            run_id=self.run.id,
             attempt_id=self.attempt.id,
-            payload=verification.to_record(),
-        )
-        return verification
+            reward=int(reward),
+        ):
+            verification = Verification.create(
+                self.run.id,
+                self.attempt.id,
+                status=VerificationStatus.PASSED if reward else VerificationStatus.FAILED,
+                finished_at=time.time(),
+                reward=int(reward),
+                checks=checks or [],
+                feedback=feedback,
+            )
+            self.runtime.store.append_verification(verification)
+            self.runtime.emit(
+                self.run.id,
+                "verification.completed",
+                attempt_id=self.attempt.id,
+                payload=verification.to_record(),
+            )
+            return verification
 
 
 @dataclass
@@ -351,6 +374,7 @@ class AgentRuntime:
         resume: bool = False,
         agent: Any = None,
         trace_steps: list[dict[str, Any]] | None = None,
+        attempt_callback: Callable[[Attempt], None] | None = None,
     ) -> RuntimeResult:
         run = self.store.get_run(run_id) if run_id else None
         if run is None:
@@ -383,9 +407,30 @@ class AgentRuntime:
         attempt.status = AttemptStatus.RUNNING
         attempt.started_at = now
         self.store.create_attempt(attempt)
+        run_span = trace_span(
+            "agentforge.run",
+            run_id=run.id,
+            attempt_id=attempt.id,
+            model=model or run.model,
+        )
+        run_span.__enter__()
+        trace_id = current_trace_id()
+        if trace_id:
+            metadata = dict(run.metadata)
+            metadata["trace_id"] = trace_id
+            self.store.update_run(run.id, metadata=metadata)
         self.store.update_run(run.id, status=RunStatus.RUNNING, error=None, cancel_requested=False)
+        if trace_id:
+            self.emit(
+                run.id,
+                "run.trace_started",
+                attempt_id=attempt.id,
+                payload={"trace_id": trace_id},
+            )
         self.emit(run.id, "run.started", attempt_id=attempt.id, payload={"resume": resume})
         self.emit(run.id, "attempt.started", attempt_id=attempt.id, payload=attempt.to_record())
+        if attempt_callback is not None:
+            attempt_callback(attempt)
 
         cancel_event = threading.Event()
         restored_trace_steps = restored_state.get("trace_steps")
@@ -414,13 +459,19 @@ class AgentRuntime:
             outcome: dict[str, Any] = {}
             executor_done = threading.Event()
 
+            executor_context = copy_context()
+
             def invoke_executor() -> None:
-                try:
-                    outcome["answer"] = executor(context)
-                except BaseException as exc:  # worker must always release the monitor
-                    outcome["error"] = exc
-                finally:
-                    executor_done.set()
+                def execute_in_context() -> None:
+                    try:
+                        outcome["answer"] = executor(context)
+                    except BaseException as exc:  # worker must always release the monitor
+                        outcome["error"] = exc
+                    finally:
+                        self._close_tool_spans(context)
+                        executor_done.set()
+
+                executor_context.run(execute_in_context)
 
             worker = threading.Thread(
                 target=invoke_executor,
@@ -495,6 +546,7 @@ class AgentRuntime:
                 attempt_id=attempt.id,
                 payload={"answer": answer, "error": error_text},
             )
+            run_span.__exit__(None, None, None)
 
         stored_run = self.store.get_run(run.id) or run
         trace = RunTrace(
@@ -523,6 +575,7 @@ class AgentRuntime:
         project_id: str = "default",
         user_id: str = "default",
         max_duration: float | None = None,
+        attempt_callback: Callable[[Attempt], None] | None = None,
     ) -> RuntimeResult:
         """Run a smolagents instance and persist only this invocation's steps."""
         before = len(getattr(getattr(agent, "memory", None), "steps", []) or []) if agent else 0
@@ -579,6 +632,7 @@ class AgentRuntime:
             max_duration=max_duration,
             resume=not reset,
             agent=built_agent,
+            attempt_callback=attempt_callback,
         )
         result.agent = built_agent
         return result
@@ -638,6 +692,17 @@ class AgentRuntime:
             if agent is not None and hasattr(agent, "interrupt_switch"):
                 agent.interrupt_switch = True
 
+    @staticmethod
+    def _close_tool_spans(context: RuntimeContext) -> None:
+        for call_id, span in list(context.active_tool_spans.items()):
+            context.active_tool_spans.pop(call_id, None)
+            try:
+                span.__exit__(None, None, None)
+            except Exception:
+                # A provider span must not hide the runtime result during
+                # cancellation or when a third-party tool exits abruptly.
+                continue
+
     def _handle_tool_event(self, context: RuntimeContext, event: dict[str, Any]) -> dict[str, Any] | None:
         if context.closed:
             return None
@@ -646,6 +711,14 @@ class AgentRuntime:
             self.emit(
                 context.run.id,
                 "policy.decision",
+                attempt_id=context.attempt.id,
+                payload={key: value for key, value in event.items() if key != "phase"},
+            )
+            return None
+        if phase in {"llm_retry", "llm_failed"}:
+            self.emit(
+                context.run.id,
+                "llm.retry" if phase == "llm_retry" else "llm.failed",
                 attempt_id=context.attempt.id,
                 payload={key: value for key, value in event.items() if key != "phase"},
             )
@@ -681,6 +754,15 @@ class AgentRuntime:
                 idempotency_key=key,
             )
             context.active_tool_calls[call_id] = call
+            span = trace_span(
+                "agentforge.tool_call",
+                run_id=context.run.id,
+                attempt_id=context.attempt.id,
+                tool_name=name,
+                replayed=False,
+            )
+            span.__enter__()
+            context.active_tool_spans[call_id] = span
             self.store.append_tool_call(call)
             self.emit(
                 context.run.id,
@@ -713,6 +795,9 @@ class AgentRuntime:
             attempt_id=context.attempt.id,
             payload=completed_call.to_record(),
         )
+        span = context.active_tool_spans.pop(call_id, None)
+        if span is not None:
+            span.__exit__(None, None, None)
         return None
 
     def _bind_agent_events(self, agent: Any, context: RuntimeContext) -> None:

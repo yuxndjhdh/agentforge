@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import time
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from agentforge.api import create_app
@@ -71,3 +74,229 @@ def test_api_benchmark_uses_full_registry_and_rejects_unknown(tmp_path, monkeypa
         invalid_k = client.post("/benchmarks", json={"trials": 1, "k": 2})
         assert invalid_k.status_code == 400
         assert "k must be <= trials" in invalid_k.json()["detail"]
+
+
+def test_api_benchmark_records_survive_service_rebuild(tmp_path, monkeypatch):
+    cfg = ModelConfig(
+        base_url="http://localhost",
+        api_key="",
+        model="test",
+        state_db=str(tmp_path / "state.sqlite3"),
+        trace_dir=str(tmp_path / "traces"),
+    )
+
+    def fake_benchmark(cfg, tasks, *, num_trials, k, out_dir, seed):
+        if seed == 99:
+            raise RuntimeError("benchmark provider unavailable")
+        return {"report_path": str(tmp_path / "completed" / "report.json")}
+
+    monkeypatch.setattr("agentforge.benchmark.run_benchmark", fake_benchmark)
+    service = RunService(cfg)
+    app = create_app(service=service)
+    with TestClient(app) as client:
+        completed = client.post(
+            "/benchmarks",
+            json={"tasks": ["fix-add"], "trials": 1, "k": 1, "seed": 1},
+        ).json()
+        failed = client.post(
+            "/benchmarks",
+            json={"tasks": ["fix-add"], "trials": 1, "k": 1, "seed": 99},
+        ).json()
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            completed_state = client.get(f"/benchmarks/{completed['id']}").json()
+            failed_state = client.get(f"/benchmarks/{failed['id']}").json()
+            if completed_state["status"] == "succeeded" and failed_state["status"] == "failed":
+                break
+            time.sleep(0.02)
+        assert completed_state["status"] == "succeeded"
+        report_path = Path(completed_state["report_path"])
+        assert report_path.parent.name == "completed"
+        assert report_path.name == "report.json"
+        assert failed_state["status"] == "failed"
+        assert "provider unavailable" in failed_state["error"]
+
+    rebuilt = RunService(cfg)
+    try:
+        assert rebuilt.get_benchmark(completed["id"])["status"] == "succeeded"
+        assert rebuilt.get_benchmark(failed["id"])["status"] == "failed"
+    finally:
+        rebuilt.close()
+
+
+def test_api_run_state_survives_service_rebuild(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cfg = ModelConfig(
+        base_url="http://localhost",
+        api_key="",
+        model="test",
+        state_db=str(tmp_path / "state.sqlite3"),
+        trace_dir=str(tmp_path / "traces"),
+    )
+    service = RunService(cfg)
+
+    def fail(_ctx):
+        raise RuntimeError("persisted failure")
+
+    service.runtime.run("persistent-run", str(repo), fail, run_id="persistent-run")
+    service.close()
+
+    rebuilt = RunService(cfg)
+    app = create_app(service=rebuilt)
+    with TestClient(app) as client:
+        loaded = client.get("/runs/persistent-run")
+        assert loaded.status_code == 200
+        assert loaded.json()["status"] == "failed"
+        assert "persisted failure" in loaded.json()["error"]
+
+
+def test_api_runs_real_worker_with_fake_provider_and_records_trace_metrics(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    class FakeAgent:
+        def __init__(self):
+            self.memory = type("Memory", (), {"steps": []})()
+            self.model = type("Model", (), {"compressions": []})()
+            self.tools = {}
+
+        def run(self, task, reset=True, max_steps=20):
+            return f"done:{task}:{reset}:{max_steps}"
+
+    monkeypatch.setattr("agentforge.harness.make_agent", lambda *args, **kwargs: FakeAgent())
+    cfg = ModelConfig(
+        base_url="http://fake",
+        api_key="",
+        model="fake",
+        state_db=str(tmp_path / "state.sqlite3"),
+        trace_dir=str(tmp_path / "traces"),
+    )
+    service = RunService(cfg)
+    app = create_app(service=service)
+    with TestClient(app) as client:
+        created = client.post("/runs", json={"repo": str(repo), "task": "real-worker", "run_id": "e2e"})
+        assert created.status_code == 202
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            loaded = client.get("/runs/e2e").json()
+            if loaded["status"] == "succeeded":
+                break
+            time.sleep(0.02)
+        assert loaded["status"] == "succeeded"
+        assert loaded["trace_id"]
+        trace = client.get("/runs/e2e/trace").json()
+        trace_events = trace["events"]
+        assert any(event["type"] == "run.trace_started" for event in trace_events)
+        assert all(
+            event["payload"].get("trace_id") == loaded["trace_id"]
+            for event in trace_events
+            if event["type"] != "run.created"
+        )
+        metrics = ""
+        deadline = time.time() + 1
+        while time.time() < deadline:
+            metrics = client.get("/metrics").text
+            if "agentforge_run_duration_seconds_bucket" in metrics:
+                break
+            time.sleep(0.01)
+        assert "agentforge_run_duration_seconds_bucket" in metrics
+
+
+def test_api_real_worker_failure_and_cancel_are_persisted(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    class FakeAgent:
+        def __init__(self):
+            self.memory = type("Memory", (), {"steps": []})()
+            self.model = type("Model", (), {"compressions": []})()
+            self.tools = {}
+
+        def run(self, task, reset=True, max_steps=20):
+            if task == "fail":
+                raise RuntimeError("fake provider failure")
+            time.sleep(0.5)
+            return "cancelled later"
+
+    monkeypatch.setattr("agentforge.harness.make_agent", lambda *args, **kwargs: FakeAgent())
+    cfg = ModelConfig(
+        base_url="http://fake",
+        api_key="",
+        model="fake",
+        state_db=str(tmp_path / "state.sqlite3"),
+        trace_dir=str(tmp_path / "traces"),
+    )
+    service = RunService(cfg)
+    app = create_app(service=service)
+    with TestClient(app) as client:
+        failed = client.post("/runs", json={"repo": str(repo), "task": "fail", "run_id": "api-fail"})
+        assert failed.status_code == 202
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            failed_state = client.get("/runs/api-fail").json()
+            if failed_state["status"] == "failed":
+                break
+            time.sleep(0.02)
+        assert failed_state["status"] == "failed"
+        assert "fake provider failure" in failed_state["error"]
+
+        cancelled = client.post(
+            "/runs",
+            json={"repo": str(repo), "task": "cancel", "run_id": "api-cancel"},
+        )
+        assert cancelled.status_code == 202
+        deadline = time.time() + 1
+        while time.time() < deadline:
+            current = client.get("/runs/api-cancel").json()
+            if current["status"] == "running":
+                break
+            time.sleep(0.01)
+        assert client.post("/runs/api-cancel/cancel").json()["status"] == "cancelled"
+        assert client.get("/runs/api-cancel/trace").status_code == 200
+
+
+def test_resume_api_returns_new_attempt_and_completes_with_fake_provider(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    class FakeAgent:
+        def __init__(self):
+            self.memory = type("Memory", (), {"steps": []})()
+            self.model = type("Model", (), {"compressions": []})()
+            self.tools = {}
+
+        def run(self, task, reset=True, max_steps=20):
+            time.sleep(0.2)
+            return "resumed"
+
+    monkeypatch.setattr("agentforge.harness.make_agent", lambda *args, **kwargs: FakeAgent())
+    cfg = ModelConfig(
+        base_url="http://fake",
+        api_key="",
+        model="fake",
+        state_db=str(tmp_path / "state.sqlite3"),
+        trace_dir=str(tmp_path / "traces"),
+    )
+    service = RunService(cfg)
+
+    def fail(_ctx):
+        raise RuntimeError("interrupted")
+
+    service.runtime.run("resume-me", str(repo), fail, run_id="resume-me")
+    app = create_app(service=service)
+    with TestClient(app) as client:
+        resumed = client.post("/runs/resume-me/resume")
+        assert resumed.status_code == 202
+        assert resumed.json()["attempt_id"]
+        conflict = client.post("/runs/resume-me/resume")
+        assert conflict.status_code == 409
+        assert "resume in progress" in conflict.json()["detail"]
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            loaded = client.get("/runs/resume-me").json()
+            if loaded["status"] == "succeeded":
+                break
+            time.sleep(0.02)
+        assert loaded["status"] == "succeeded"
+        assert len(client.get("/runs/resume-me/trace").json()["attempts"]) == 2

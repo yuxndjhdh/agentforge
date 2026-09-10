@@ -21,6 +21,7 @@ api = [
 observability = [
   "opentelemetry-api>=1.30,<2",
   "opentelemetry-sdk>=1.30,<2",
+  "opentelemetry-exporter-otlp>=1.30,<2",
 ]
 tokenizer = [
   "tiktoken>=0.7,<1",

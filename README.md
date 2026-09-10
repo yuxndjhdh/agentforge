@@ -49,7 +49,7 @@ agentforge/
   trace.py       原子 trace 导出与渲染
 ```
 
-新的 runtime 不依赖 smolagents 的 memory 作为 checkpoint 协议。每个 run 有稳定 ID，事件追加到 `events.jsonl`，元数据存入 SQLite，trace 只导出当前 run 的关联步骤。重复提交已成功的 run ID 会返回已保存结果，不重新执行。
+新的 runtime 不依赖 smolagents 的 memory 作为 checkpoint 协议。每个 run 有稳定 ID，事件追加到 `events.jsonl`，元数据存入 SQLite，trace 只导出当前 run 的关联步骤。服务重启时会把遗留的运行和 benchmark 标记为可诊断的失败状态；失败或取消的 run 可以通过 API 创建新的 attempt 继续执行，重复提交已成功的 run ID 会返回已保存结果，不重新执行。
 
 ## API
 
@@ -67,12 +67,13 @@ POST /runs
 GET  /runs/{id}
 GET  /runs/{id}/trace
 POST /runs/{id}/cancel
+POST /runs/{id}/resume
 POST /benchmarks
 GET  /benchmarks/{id}
 GET  /metrics
 ```
 
-`GET /` 是一个可提交任务、轮询状态和查看 trace 的简易运行页面。CLI 与 API 都调用同一个 `AgentRuntime`。
+`AGENTFORGE_STATE_DB` 保存 run 和 benchmark job 的状态、配置、任务列表、报告路径及错误；`AGENTFORGE_TRACE_DIR` 保存事件、trace 和 benchmark 报告。`GET /` 是一个可提交任务、轮询状态和查看 trace 的简易运行页面。CLI 与 API 都调用同一个 `AgentRuntime`。`/metrics` 输出 Prometheus counters 和延迟 histograms，OTLP exporter 通过 `OTEL_EXPORTER_OTLP_ENDPOINT` 可选启用，未安装观测依赖或 exporter 不可用时仍可本地运行。
 
 ## 评测语义
 
@@ -107,4 +108,4 @@ pass@k = 1 - C(N - c, k) / C(N, k)
 
 CI 执行 lint、类型检查、覆盖率、单元测试和安全回归。直接依赖版本记录在 `requirements.lock`；发布元数据在 `pyproject.toml`。
 
-当前工作区已实际验证：86 个测试通过、4 个平台/环境限制用例跳过；`ruff check agentforge tests`、`mypy agentforge`、`compileall` 和 FastAPI smoke test 均通过。Docker/Podman live 安全验收需在 Linux CI 执行，结果见 `docs/SECURITY_REPORT.md`；memory/context 证据见 `docs/MEMORY_CONTEXT_REPORT.md`。
+当前工作区已实际验证：99 个测试通过、4 个平台/环境限制用例跳过；`ruff check agentforge tests`、`mypy agentforge`、`compileall` 和 FastAPI E2E smoke test 均通过。Docker/Podman live 安全验收需在 Linux CI 执行，结果见 `docs/SECURITY_REPORT.md`；memory/context 证据见 `docs/MEMORY_CONTEXT_REPORT.md`。

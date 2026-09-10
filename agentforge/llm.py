@@ -10,6 +10,7 @@ import time
 
 from .config import ModelConfig
 from .context import compact_messages
+from .observability import trace_span
 from .tokenizer import build_token_counter
 
 try:
@@ -57,6 +58,7 @@ class CompactingModel(OpenAICompatServerModel):
         max_context_tokens: int | None = None,
         token_counter=None,
         tokenizer_metadata: dict | None = None,
+        event_sink=None,
         llm_retries: int = 2,
         llm_backoff: float = 0.5,
         **kwargs,
@@ -69,6 +71,7 @@ class CompactingModel(OpenAICompatServerModel):
         self.max_context_tokens = max_context_tokens
         self.token_counter = token_counter
         self.tokenizer_metadata = dict(tokenizer_metadata or {})
+        self.event_sink = event_sink
         self.compressions: list[dict] = []  # 每次实际触发的压缩统计
 
     def generate(
@@ -94,27 +97,36 @@ class CompactingModel(OpenAICompatServerModel):
         # 避免经 **kwargs 传到它时重复关键字。
         last_error: Exception | None = None
         for attempt in range(self.llm_retries + 1):
-            try:
-                return super().generate(
-                    compacted,
-                    stop_sequences=stop_sequences,
-                    response_format=response_format,
-                    tools_to_call_from=tools_to_call_from,
-                    **kwargs,
-                )
-            except Exception as exc:
-                last_error = exc
-                if attempt >= self.llm_retries or not _retryable(exc):
-                    raise
-                delay = self.llm_backoff * (2**attempt)
-                if delay:
-                    time.sleep(delay)
+            with trace_span(
+                "agentforge.llm_request",
+                model=getattr(self, "model_id", ""),
+                attempt=attempt + 1,
+            ):
+                try:
+                    return super().generate(
+                        compacted,
+                        stop_sequences=stop_sequences,
+                        response_format=response_format,
+                        tools_to_call_from=tools_to_call_from,
+                        **kwargs,
+                    )
+                except Exception as exc:
+                    last_error = exc
+                    if attempt >= self.llm_retries or not _retryable(exc):
+                        if self.event_sink:
+                            self.event_sink({"phase": "llm_failed", "attempt": attempt + 1, "error": str(exc)})
+                        raise
+                    if self.event_sink:
+                        self.event_sink({"phase": "llm_retry", "attempt": attempt + 1, "error": str(exc)})
+                    delay = self.llm_backoff * (2**attempt)
+                    if delay:
+                        time.sleep(delay)
         if last_error is not None:
             raise last_error
         raise RuntimeError("model generation ended without a result")  # pragma: no cover
 
 
-def build_model(cfg: ModelConfig):
+def build_model(cfg: ModelConfig, *, event_sink=None):
     """用配置构建通向 OpenAI 兼容端点的模型。缺 key 时给出明确报错。"""
     if OpenAIServerModel is None:
         raise RuntimeError('需要安装 smolagents：pip install "smolagents[openai]"') from _IMPORT_ERROR
@@ -131,6 +143,7 @@ def build_model(cfg: ModelConfig):
         max_context_tokens=cfg.max_context_tokens,
         token_counter=token_counter,
         tokenizer_metadata=tokenizer_metadata,
+        event_sink=event_sink,
         llm_retries=cfg.llm_retries,
         llm_backoff=cfg.llm_backoff,
         retry=False,

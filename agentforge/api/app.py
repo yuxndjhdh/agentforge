@@ -41,6 +41,7 @@ class RunCreateRequest(BaseModel):
 class BenchmarkRequest(BaseModel):
     trials: int = Field(default=1, ge=1)
     k: int = Field(default=1, ge=1)
+    seed: int = 0
     tasks: list[str] | None = None
 
 
@@ -99,18 +100,19 @@ class RunService:
 
     def benchmark(self, request: BenchmarkRequest) -> dict[str, Any]:
         from ..benchmark import run_benchmark
-        from ..code_tasks import BUILTIN_TASKS
+        from ..code_tasks import select_benchmark_tasks
 
-        tasks = BUILTIN_TASKS
-        if request.tasks is not None:
-            wanted = set(request.tasks)
-            tasks = [task for task in tasks if task.name in wanted]
+        if request.k > request.trials:
+            raise ValueError("k must be <= trials")
+        tasks = select_benchmark_tasks(request.tasks)
         benchmark_id = f"benchmark_{uuid.uuid4().hex}"
         record = {
             "id": benchmark_id,
             "status": "running",
             "trials": request.trials,
             "k": request.k,
+            "seed": request.seed,
+            "tasks": [task.name for task in tasks],
         }
         with self._lock:
             self.benchmarks[benchmark_id] = record
@@ -122,6 +124,7 @@ class RunService:
                     tasks,
                     num_trials=request.trials,
                     k=request.k,
+                    seed=request.seed,
                     out_dir=Path(self.cfg.trace_dir) / "benchmarks" / benchmark_id,
                 )
                 with self._lock:

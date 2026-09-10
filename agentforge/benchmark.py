@@ -33,6 +33,7 @@ def run_benchmark(
     num_trials: int = 1,
     k: int = 1,
     out_dir: str | Path = "runs/benchmarks",
+    seed: int = 0,
 ) -> dict[str, Any]:
     """Run a fixed task list and atomically write a complete report."""
     started = time.time()
@@ -65,6 +66,8 @@ def run_benchmark(
         "platform": platform.platform(),
         "model": cfg.model,
         "config": public_config(cfg),
+        "task_order": [task.name for task in tasks],
+        "seed": seed,
         "task_specs": [task.to_spec() for task in tasks],
         "summary": {
             "tasks": len(tasks),
@@ -73,6 +76,8 @@ def run_benchmark(
             "k": k,
             "pass@1": result["pass@1"],
             "pass@k": result["pass@k"],
+            "pass@3": result.get("pass@3"),
+            "pass@5": result.get("pass@5"),
             "first_success_rate": first_success / len(tasks) if tasks else 0.0,
             "final_success_rate": final_success / len(tasks) if tasks else 0.0,
             "avg_steps": statistics.fmean(steps) if steps else 0.0,

@@ -83,6 +83,35 @@ def test_command_check_requires_zero_exit_and_stdout(tmp_path):
     assert eval_reward(str(tmp_path), stderr_task) == 0
 
 
+def test_command_check_can_assert_behavioral_stdout_lines(tmp_path):
+    exact = CodeTask(
+        name="exact",
+        instruction="i",
+        build_seed=lambda w: None,
+        checks=[
+            Check(
+                kind="command",
+                command="python -c \"print('5'); print('6')\"",
+                stdout_lines=["5", "6"],
+            )
+        ],
+    )
+    assert eval_reward(str(tmp_path), exact) == 1
+    wrong = CodeTask(
+        name="wrong-exact",
+        instruction="i",
+        build_seed=lambda w: None,
+        checks=[
+            Check(
+                kind="command",
+                command="python -c \"print('15'); print('6')\"",
+                stdout_lines=["5", "6"],
+            )
+        ],
+    )
+    assert eval_reward(str(tmp_path), wrong) == 0
+
+
 def test_code_task_requires_acceptance_rule():
     import pytest
 

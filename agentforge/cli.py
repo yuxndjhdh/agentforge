@@ -74,22 +74,22 @@ def cmd_eval(args) -> int:
 
 def cmd_benchmark(args) -> int:
     from .benchmark import run_benchmark
-    from .code_tasks import BENCHMARK_TASKS
+    from .code_tasks import select_benchmark_tasks
 
     cfg = load_config()
-    tasks = BENCHMARK_TASKS
-    if args.tasks:
-        names = {name.strip() for name in args.tasks.split(",") if name.strip()}
-        tasks = [task for task in tasks if task.name in names]
-        if not tasks:
-            print(f"错误: 没有匹配的任务名 {args.tasks}", file=sys.stderr)
-            return 2
+    names = [name.strip() for name in args.tasks.split(",") if name.strip()] if args.tasks else None
+    try:
+        tasks = select_benchmark_tasks(names)
+    except ValueError as exc:
+        print(f"错误: {exc}", file=sys.stderr)
+        return 2
     report = run_benchmark(
         cfg,
         tasks,
         num_trials=args.trials,
         k=args.k,
         out_dir=args.out,
+        seed=args.seed,
     )
     summary = report["summary"]
     print(f"benchmark: {report['benchmark_version']}  tasks={summary['tasks']} episodes={summary['episodes']}")
@@ -200,6 +200,7 @@ def main(argv=None) -> int:
     p_bench.add_argument("--k", type=int, default=1, help="计算 pass@k 的 k")
     p_bench.add_argument("--tasks", default="", help="逗号分隔任务名，缺省为 benchmark 全部任务")
     p_bench.add_argument("--out", default="runs/benchmarks/latest", help="报告输出目录")
+    p_bench.add_argument("--seed", type=int, default=0, help="固定实验 seed（任务本身为确定性 seed）")
     p_bench.set_defaults(fn=cmd_benchmark)
 
     p_serve = sub.add_parser("serve", help="启动 FastAPI 服务")

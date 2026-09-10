@@ -111,6 +111,8 @@ class Check:
     needles: list[str] = field(default_factory=list)
     command: str | Sequence[str] = ""
     stdout_contains: list[str] = field(default_factory=list)
+    stdout_exact: str | None = None
+    stdout_lines: list[str] | None = None
     stderr_contains: list[str] = field(default_factory=list)
     stdout_not_contains: list[str] = field(default_factory=list)
     timeout: float = 30.0
@@ -193,6 +195,10 @@ def check_passes(check: Check, workdir: str) -> bool:
             return False
         if not all(s in result.stdout for s in check.stdout_contains):
             return False
+        if check.stdout_exact is not None and result.stdout != check.stdout_exact:
+            return False
+        if check.stdout_lines is not None and result.stdout.splitlines() != check.stdout_lines:
+            return False
         if not all(s in result.stderr for s in check.stderr_contains):
             return False
         return all(s not in result.stdout for s in check.stdout_not_contains)
@@ -210,6 +216,8 @@ class CodeTask:
     difficulty: str = "medium"
     tags: tuple[str, ...] = ()
     resource_limits: dict[str, float | int] = field(default_factory=dict)
+    source: str = "agentforge-seed"
+    task_version: str = "1"
     gold_patch: str | None = None
     _gold_hash: str | None = field(default=None, repr=False)
 
@@ -223,6 +231,8 @@ class CodeTask:
             raise ValueError(f"CodeTask {self.name!r} requires a callable build_seed")
         if self.difficulty not in {"easy", "medium", "hard"}:
             raise ValueError(f"unsupported difficulty: {self.difficulty!r}")
+        if not self.source.strip() or not self.task_version.strip():
+            raise ValueError("CodeTask source and task_version cannot be empty")
         if self.gold_tree is None and not self.checks:
             raise ValueError(
                 f"CodeTask {self.name!r} must define gold_tree or at least one check"
@@ -251,6 +261,8 @@ class CodeTask:
             "difficulty": self.difficulty,
             "tags": list(self.tags),
             "resource_limits": dict(self.resource_limits),
+            "source": self.source,
+            "task_version": self.task_version,
             "has_gold_tree": self.gold_tree is not None,
             "has_gold_patch": self.gold_patch is not None,
             "checks": [
@@ -258,8 +270,13 @@ class CodeTask:
                     "kind": check.kind,
                     "path": check.path,
                     "command": check.command,
+                    "needles": list(check.needles),
                     "stdout_contains": list(check.stdout_contains),
+                    "stdout_exact": check.stdout_exact,
+                    "stdout_lines": list(check.stdout_lines) if check.stdout_lines is not None else None,
                     "stderr_contains": list(check.stderr_contains),
+                    "stdout_not_contains": list(check.stdout_not_contains),
+                    "timeout": check.timeout,
                 }
                 for check in self.checks
             ],
@@ -384,7 +401,8 @@ def failure_feedback(wd: str, task: CodeTask) -> str:
             if c.kind == "file_contains":
                 lines.append(f"- {c.path} 应包含 {', '.join(c.needles)}")
             elif c.kind == "command":
-                lines.append(f"- 命令 {c.command!r} 输出应包含 {', '.join(c.stdout_contains)}")
+                expected = c.stdout_lines or c.stdout_contains
+                lines.append(f"- 命令 {c.command!r} 输出应满足 {expected}")
             elif c.kind == "file_absent":
                 lines.append(f"- {c.path} 应不存在")
         return "\n".join(lines)
@@ -501,7 +519,7 @@ def evaluate(
                 }
             )
     n = len(tasks)
-    return {
+    report = {
         "tasks": n,
         "num_trials": num_trials,
         "success": dict(success),
@@ -510,6 +528,10 @@ def evaluate(
         "failures": failures,
         "episodes": episodes,
     }
+    for requested_k in (3, 5):
+        if requested_k <= num_trials:
+            report[f"pass@{requested_k}"] = pass_at_k(success, num_trials, requested_k)
+    return report
 
 
 def _failure_type(task: CodeTask, result: EvalResult) -> str | None:

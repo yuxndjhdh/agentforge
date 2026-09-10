@@ -238,27 +238,27 @@ T3 完成门槛：
 
 ### T4-01 修正 Benchmark 接线
 
-- [ ] API benchmark 默认使用 `BENCHMARK_TASKS`，不是单任务 `BUILTIN_TASKS`。
-- [ ] API 和 CLI 使用同一任务选择逻辑。
-- [ ] 请求不存在的任务名时返回明确错误。
-- [ ] 增加 benchmark runner 和 API benchmark 测试。
+- [x] API benchmark 默认使用 `BENCHMARK_TASKS`，不是单任务 `BUILTIN_TASKS`。
+- [x] API 和 CLI 使用同一任务选择逻辑。
+- [x] 请求不存在的任务名时返回明确错误。
+- [x] 增加 benchmark runner 和 API benchmark 测试。
 
 ### T4-02 提升任务质量
 
-- [ ] 审核现有 23 个任务，移除只靠简单字符串替换即可通过的脆弱验收。
-- [ ] command check 使用专用测试文件验证行为，而不只验证输出中含某个数字。
-- [ ] 至少加入 10 个多文件真实任务。
-- [ ] 覆盖 bug 修复、补测试、API 修改、重构、配置迁移、CLI 和安全修复。
-- [ ] 为任务记录来源、难度、标签、资源限制和验收逻辑。
-- [ ] seed、gold 和验收代码进入版本控制。
+- [x] 审核现有 23 个任务，移除只靠简单字符串替换即可通过的脆弱验收。
+- [x] command check 使用专用行为输出行验证，而不只验证输出中含某个数字。
+- [x] 至少加入 10 个多文件真实任务（当前 15 个）。
+- [x] 覆盖 bug 修复、补测试、API 修改、重构、配置迁移、CLI 和安全修复。
+- [x] 为任务记录来源、难度、标签、资源限制和验收逻辑。
+- [x] seed、gold 和验收代码进入版本控制。
 
 ### T4-03 Benchmark runner 回归测试
 
-- [ ] 使用 fake solver 测试报告生成，不消耗真实模型额度。
-- [ ] 测试 pass@1、pass@3、pass@5 汇总。
-- [ ] 测试 p50/p95、token、成本和失败类型。
-- [ ] 测试报告原子写入和损坏恢复。
-- [ ] 测试固定任务顺序、随机种子和配置快照。
+- [x] 使用 fake solver 测试报告生成，不消耗真实模型额度。
+- [x] 测试 pass@1、pass@3、pass@5 汇总。
+- [x] 测试 p50/p95、token、成本和失败类型。
+- [x] 测试报告原子写入和损坏恢复。
+- [x] 测试固定任务顺序、随机种子和配置快照。
 
 ### T4-04 执行真实实验矩阵
 
@@ -271,25 +271,25 @@ T3 完成门槛：
 | C | 关闭 | 开启 | 测量反馈重试影响 |
 | D | 开启 | 开启 | 完整系统 |
 
-- [ ] 固定模型版本、temperature、任务版本和 AgentForge commit。
+- [!] 固定模型版本、temperature、任务版本和 AgentForge commit（当前未配置 `HARNESS_LLM_KEY`，不能执行真实矩阵）。
 - [ ] 保存完整配置快照和失败 trace。
 - [ ] 记录输入/输出 token、成本、耗时和步骤数。
 - [ ] 不把失败运行删除或只保留汇总。
 
 ### T4-05 生成 Benchmark 报告
 
-- [ ] 生成 `runs/benchmarks/<version>/report.json`。
-- [ ] 生成 `docs/BENCHMARK_REPORT.md`。
+- [!] 生成 `runs/benchmarks/<version>/report.json`（真实实验被缺少 `HARNESS_LLM_KEY` 阻塞；fake solver 产物只用于自动测试）。
+- [!] 生成 `docs/BENCHMARK_REPORT.md`（不能用未执行的真实结果填充）。
 - [ ] 报告包含 pass@1/3/5、p50/p95、成本、失败分布和消融对比。
 - [ ] 对统计结果进行人工抽样，至少复查每类失败 3 个 trace。
 - [ ] 只在报告生成后确定简历中的量化数字。
 
 T4 完成门槛：
 
-- [ ] 一条命令能从固定任务集重建报告。
-- [ ] 至少 20 个有效任务通过任务质量审核。
-- [ ] 四组真实实验全部存在可追踪产物。
-- [ ] `benchmark.py` 具备自动测试覆盖。
+- [x] 一条命令能从固定任务集重建报告。
+- [x] 至少 20 个有效任务通过任务质量审核。
+- [!] 四组真实实验全部存在可追踪产物（缺少 `HARNESS_LLM_KEY`）。
+- [x] `benchmark.py` 具备自动测试覆盖。
 
 ---
 
@@ -438,3 +438,4 @@ docker version
 |  |  |  |  |
 | 2026-09-10 | T2-01~T2-05 | `6ff3300`; `docs/SECURITY_REPORT.md` | 容器诊断、digest pin、auto 回退 trace、fail-closed 和 Linux Docker CI 已实现；当前 Windows 无 Docker/Podman，storage quota 与 live 攻击验收保留阻塞。 |
 | 2026-09-10 | T3-01~T3-04 | 待提交; `docs/MEMORY_CONTEXT_REPORT.md` | 完成 project/user/run-local 隔离、并发与损坏恢复、恶意记忆边界、tiktoken/字符 fallback 和预算 trace。 |
+| 2026-09-10 | T4-01~T4-03 | 待提交; `docs/BENCHMARK_TASK_AUDIT.md` | 统一 CLI/API 任务选择，补精确行为验收、seed/config snapshot、fake solver 报告和 pass@1/3/5；真实实验因缺少 `HARNESS_LLM_KEY` 未执行。 |

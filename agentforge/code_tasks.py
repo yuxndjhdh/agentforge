@@ -8,6 +8,7 @@ examples/demo_repo（那个已被演示跑动改对），本层自建基线，�
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 
 from .eval import Check, CodeTask
 
@@ -48,7 +49,7 @@ FIX_ADD = CodeTask(
     build_seed=_seed_fix_add,
     checks=[
         Check(kind="file_contains", path="calc.py", needles=["return a + b"]),
-        Check(kind="command", command="python main.py", stdout_contains=["5", "6"]),
+        Check(kind="command", command="python main.py", stdout_lines=["5", "6"]),
     ],
 )
 
@@ -90,39 +91,39 @@ BENCHMARK_TASKS = [
         "fix-subtract",
         "修复 calc.py 的 subtract，使其返回 a-b，并运行 python main.py 验证输出 5。",
         {"calc.py": "def subtract(a, b):\n    return a + b\n", "main.py": "from calc import subtract\nprint(subtract(8, 3))\n"},
-        [Check(kind="file_contains", path="calc.py", needles=["return a - b"]), Check(kind="command", command="python main.py", stdout_contains=["5"])],
+        [Check(kind="file_contains", path="calc.py", needles=["return a - b"]), Check(kind="command", command="python main.py", stdout_lines=["5"])],
     ),
     _benchmark_task(
         "fix-uppercase",
         "修复 normalize，使输入文本转换为大写，然后运行 main.py。",
         {"text.py": "def normalize(value):\n    return value.lower()\n", "main.py": "from text import normalize\nprint(normalize('agent'))\n"},
-        [Check(kind="file_contains", path="text.py", needles=["return value.upper()"]), Check(kind="command", command="python main.py", stdout_contains=["AGENT"])],
+        [Check(kind="file_contains", path="text.py", needles=["return value.upper()"]), Check(kind="command", command="python main.py", stdout_lines=["AGENT"])],
     ),
     _benchmark_task(
         "fix-clamp",
         "修复 clamp，确保低于最小值返回 lo，高于最大值返回 hi，并运行 main.py。",
         {"numbers.py": "def clamp(value, lo, hi):\n    return value\n", "main.py": "from numbers import clamp\nprint(clamp(9, 0, 5))\n"},
-        [Check(kind="file_contains", path="numbers.py", needles=["min(hi, max(lo, value))"]), Check(kind="command", command="python main.py", stdout_contains=["5"])],
+        [Check(kind="file_contains", path="numbers.py", needles=["min(hi, max(lo, value))"]), Check(kind="command", command="python main.py", stdout_lines=["5"])],
     ),
     _benchmark_task(
         "fix-average",
         "修复 average，使空列表返回 0 且非空列表返回算术平均值。",
         {"stats.py": "def average(values):\n    return sum(values) / len(values)\n", "main.py": "from stats import average\nprint(average([]))\n"},
-        [Check(kind="file_contains", path="stats.py", needles=["if not values", "return 0"]), Check(kind="command", command="python main.py", stdout_contains=["0"])],
+        [Check(kind="file_contains", path="stats.py", needles=["if not values", "return 0"]), Check(kind="command", command="python main.py", stdout_lines=["0"])],
         tags=("bug-fix", "edge-case"),
     ),
     _benchmark_task(
         "fix-json-key",
         "修复 user_payload，返回名为 user_id 的字段，并运行 main.py。",
         {"payload.py": "def user_payload(user_id):\n    return {'id': user_id}\n", "main.py": "from payload import user_payload\nprint(user_payload(7)['user_id'])\n"},
-        [Check(kind="file_contains", path="payload.py", needles=["'user_id': user_id"]), Check(kind="command", command="python main.py", stdout_contains=["7"])],
+        [Check(kind="file_contains", path="payload.py", needles=["'user_id': user_id"]), Check(kind="command", command="python main.py", stdout_lines=["7"])],
         tags=("api", "bug-fix"),
     ),
     _benchmark_task(
         "fix-safe-divide",
         "给 divide 增加除数为零时返回 None 的行为，并运行 main.py。",
         {"mathlib.py": "def divide(a, b):\n    return a / b\n", "main.py": "from mathlib import divide\nprint(divide(4, 0))\n"},
-        [Check(kind="file_contains", path="mathlib.py", needles=["if b == 0", "return None"]), Check(kind="command", command="python main.py", stdout_contains=["None"])],
+        [Check(kind="file_contains", path="mathlib.py", needles=["if b == 0", "return None"]), Check(kind="command", command="python main.py", stdout_lines=["None"])],
         tags=("bug-fix", "security"),
     ),
     _benchmark_task(
@@ -151,7 +152,7 @@ BENCHMARK_TASKS = [
         "add-api-field",
         "让 user() 返回 active=True 字段并保持已有 name 字段，运行 main.py。",
         {"service.py": "def user(name):\n    return {'name': name}\n", "main.py": "from service import user\nprint(user('a')['active'])\n"},
-        [Check(kind="file_contains", path="service.py", needles=["'active': True"]), Check(kind="command", command="python main.py", stdout_contains=["True"])],
+        [Check(kind="file_contains", path="service.py", needles=["'active': True"]), Check(kind="command", command="python main.py", stdout_lines=["True"])],
         tags=("api",),
     ),
     _benchmark_task(
@@ -165,21 +166,21 @@ BENCHMARK_TASKS = [
         "cli-argument",
         "让 CLI 使用第一个命令行参数作为名字，缺省时使用 world，并运行 python main.py agent。",
         {"main.py": "import sys\nname = 'world'\nprint('hello ' + name)\n"},
-        [Check(kind="file_contains", path="main.py", needles=["sys.argv", "hello "]), Check(kind="command", command="python main.py agent", stdout_contains=["hello agent"])],
+        [Check(kind="file_contains", path="main.py", needles=["sys.argv", "hello "]), Check(kind="command", command="python main.py agent", stdout_lines=["hello agent"])],
         tags=("cli",),
     ),
     _benchmark_task(
         "config-default",
         "将配置的 timeout 默认值改为 30，并运行 main.py。",
         {"config.py": "TIMEOUT = 10\n", "main.py": "from config import TIMEOUT\nprint(TIMEOUT)\n"},
-        [Check(kind="file_contains", path="config.py", needles=["TIMEOUT = 30"]), Check(kind="command", command="python main.py", stdout_contains=["30"])],
+        [Check(kind="file_contains", path="config.py", needles=["TIMEOUT = 30"]), Check(kind="command", command="python main.py", stdout_lines=["30"])],
         tags=("config",),
     ),
     _benchmark_task(
         "config-env",
         "让配置从 APP_MODE 环境变量读取 mode，缺省为 dev，并运行 main.py。",
         {"config.py": "mode = 'prod'\n", "main.py": "from config import mode\nprint(mode)\n"},
-        [Check(kind="file_contains", path="config.py", needles=["os.environ.get('APP_MODE', 'dev')"]), Check(kind="command", command="python main.py", stdout_contains=["dev"])],
+        [Check(kind="file_contains", path="config.py", needles=["os.environ.get('APP_MODE', 'dev')"]), Check(kind="command", command="python main.py", stdout_lines=["dev"])],
         tags=("config", "env"),
     ),
     _benchmark_task(
@@ -223,21 +224,21 @@ BENCHMARK_TASKS = [
         "fix-date-format",
         "让 format_date 返回 YYYY-MM-DD 格式，并运行 main.py。",
         {"dates.py": "def format_date(year, month, day):\n    return f'{year}/{month}/{day}'\n", "main.py": "from dates import format_date\nprint(format_date(2026, 1, 2))\n"},
-        [Check(kind="file_contains", path="dates.py", needles=["04d", "02d"]), Check(kind="command", command="python main.py", stdout_contains=["2026-01-02"])],
+        [Check(kind="file_contains", path="dates.py", needles=["04d", "02d"]), Check(kind="command", command="python main.py", stdout_lines=["2026-01-02"])],
         tags=("bug-fix",),
     ),
     _benchmark_task(
         "fix-filter",
         "让 positive_only 只返回大于零的数字，并运行 main.py。",
         {"filters.py": "def positive_only(values):\n    return [value for value in values]\n", "main.py": "from filters import positive_only\nprint(positive_only([-1, 0, 2]))\n"},
-        [Check(kind="file_contains", path="filters.py", needles=["if value > 0"]), Check(kind="command", command="python main.py", stdout_contains=["[2]"])],
+        [Check(kind="file_contains", path="filters.py", needles=["if value > 0"]), Check(kind="command", command="python main.py", stdout_lines=["[2]"])],
         tags=("bug-fix",),
     ),
     _benchmark_task(
         "fix-immutability",
         "让 add_tag 返回新列表，不修改传入的 tags，并运行 main.py。",
         {"tags.py": "def add_tag(tags, tag):\n    tags.append(tag)\n    return tags\n", "main.py": "from tags import add_tag\nitems = ['a']\nprint(items, add_tag(items, 'b'))\n"},
-        [Check(kind="file_contains", path="tags.py", needles=["return [*tags, tag]"]), Check(kind="command", command="python main.py", stdout_contains=["['a']", "['a', 'b'"])],
+        [Check(kind="file_contains", path="tags.py", needles=["return [*tags, tag]"]), Check(kind="command", command="python main.py", stdout_lines=["['a'] ['a', 'b']"])],
         difficulty="medium",
         tags=("bug-fix", "state"),
     ),
@@ -246,3 +247,19 @@ BENCHMARK_TASKS = [
 # The original one-task list remains the CLI's quick smoke benchmark. The
 # larger list is used by ``agentforge benchmark`` and the reproducibility docs.
 BUILTIN_TASKS = [FIX_ADD]
+
+
+def select_benchmark_tasks(names: Iterable[str] | None = None) -> list[CodeTask]:
+    """Select the canonical benchmark order and reject unknown task names."""
+    if names is None:
+        return list(BENCHMARK_TASKS)
+    requested = [str(name).strip() for name in names if str(name).strip()]
+    known = {task.name for task in BENCHMARK_TASKS}
+    unknown = [name for name in requested if name not in known]
+    if unknown:
+        raise ValueError(
+            f"unknown benchmark task(s): {', '.join(unknown)}; "
+            f"available: {', '.join(task.name for task in BENCHMARK_TASKS)}"
+        )
+    wanted = set(requested)
+    return [task for task in BENCHMARK_TASKS if task.name in wanted]

@@ -27,11 +27,11 @@ copy .env.example .env
 
 ```bash
 .venv/Scripts/python -m agentforge eval --trials 2 --k 1
-.venv/Scripts/python -m agentforge benchmark --trials 1 --k 1
+.venv/Scripts/python -m agentforge benchmark --trials 1 --k 1 --seed 0
 .venv/Scripts/python -m agentforge sandbox diagnose
 ```
 
-`benchmark` 使用 23 个固定 seed 任务，报告写入 `runs/benchmarks/latest/report.json`，其中包含模型、版本、实验配置、任务规格、完整 episode、失败 trace、pass@1/pass@k、p50/p95 延迟、步数、token、估算成本和失败类型。没有配置单价时成本记录为 0，不会用估算值冒充真实账单。
+`benchmark` 使用 23 个固定 seed 任务，报告写入 `runs/benchmarks/latest/report.json`，其中包含模型、版本、实验配置、任务顺序、seed、任务规格、完整 episode、失败 trace、pass@1/pass@3/pass@5/pass@k、p50/p95 延迟、步数、token、估算成本和失败类型。没有配置单价时成本记录为 0，不会用估算值冒充真实账单。任务审核见 `docs/BENCHMARK_TASK_AUDIT.md`。
 
 ## 结构
 

@@ -11,6 +11,9 @@ from dataclasses import dataclass
 
 DEFAULT_BASE = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-v4-flash"
+DEFAULT_SANDBOX_IMAGE = (
+    "python:3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285"
+)
 
 
 @dataclass
@@ -30,7 +33,7 @@ class ModelConfig:
     sandbox_timeout: float = 30.0
     sandbox_max_output_bytes: int = 256000
     sandbox_backend: str = "auto"  # auto | local | docker | podman
-    sandbox_image: str = "python:3.13-slim"
+    sandbox_image: str = DEFAULT_SANDBOX_IMAGE
     sandbox_network: bool = False
     sandbox_cpu_limit: float = 1.0
     sandbox_memory_limit_mb: int = 512
@@ -91,7 +94,7 @@ def load_config() -> ModelConfig:
         sandbox_timeout=float(os.environ.get("HARNESS_SANDBOX_TIMEOUT", "30.0")),
         sandbox_max_output_bytes=int(os.environ.get("HARNESS_SANDBOX_MAX_OUTPUT_BYTES", "256000")),
         sandbox_backend=os.environ.get("HARNESS_SANDBOX_BACKEND", "auto").lower(),
-        sandbox_image=os.environ.get("HARNESS_SANDBOX_IMAGE", "python:3.13-slim"),
+        sandbox_image=os.environ.get("HARNESS_SANDBOX_IMAGE", DEFAULT_SANDBOX_IMAGE),
         sandbox_network=os.environ.get("HARNESS_SANDBOX_NETWORK", "0") == "1",
         sandbox_cpu_limit=float(os.environ.get("HARNESS_SANDBOX_CPU", "1.0")),
         sandbox_memory_limit_mb=int(os.environ.get("HARNESS_SANDBOX_MEMORY_MB", "512")),

@@ -142,51 +142,51 @@ T1 完成门槛：
 
 ### T2-01 准备可重复的容器测试环境
 
-- [ ] 在本机或 Linux CI 中安装并确认 Docker/Podman 可用。
-- [ ] 固定沙箱执行镜像的名称和 digest。
-- [ ] 增加容器 runtime 可用性诊断命令。
-- [ ] 显式 `docker/podman` 模式在 runtime 不可用时保持 fail-closed。
-- [ ] 明确 `auto` 回退到 local 时的告警和 trace 标记。
+- [~] 在本机或 Linux CI 中安装并确认 Docker/Podman 可用（Linux CI job 已加入；当前 Windows 主机无 runtime）。
+- [x] 固定沙箱执行镜像的名称和 digest。
+- [x] 增加容器 runtime 可用性诊断命令。
+- [x] 显式 `docker/podman` 模式在 runtime 不可用时保持 fail-closed。
+- [x] 明确 `auto` 回退到 local 时的告警和 trace 标记。
 
 ### T2-02 容器集成测试
 
-- [ ] 验证容器内 UID 非 root。
-- [ ] 验证 root filesystem 只读。
-- [ ] 验证只有 `/workspace` 可写。
-- [ ] 验证网络默认关闭。
+- [~] 验证容器内 UID 非 root（集成测试已实现，当前主机跳过）。
+- [~] 验证 root filesystem 只读（集成测试 job 已接线，当前主机跳过）。
+- [~] 验证只有 `/workspace` 可写（集成测试已实现，当前主机跳过）。
+- [~] 验证网络默认关闭（集成测试已实现，当前主机跳过）。
 - [ ] 验证 CPU、内存和 PID 限制生效。
-- [ ] 验证 timeout、cancel 和输出上限能回收完整进程树。
-- [ ] 验证宿主环境变量和 Docker/Kubernetes 配置不会进入容器。
+- [~] 验证 timeout、cancel 和输出上限能回收完整进程树（timeout/output 已实现，cancel 仍待 live 验证）。
+- [~] 验证宿主环境变量和 Docker/Kubernetes 配置不会进入容器（集成测试已实现，当前主机跳过）。
 
 ### T2-03 攻击型测试集
 
-- [ ] `../` 和绝对路径逃逸。
-- [ ] 文件与目录符号链接逃逸。
-- [ ] 硬链接覆盖外部文件。
+- [~] `../` 和绝对路径逃逸（local policy 单测已有，container live case 待补）。
+- [~] 文件与目录符号链接逃逸（local policy 单测已有，Windows 符号链接受权限限制）。
+- [~] 硬链接覆盖外部文件（local policy 单测已有，container live case 待补）。
 - [ ] PowerShell、cmd、Python 子进程间接执行。
-- [ ] shell control characters 和参数解析绕过。
-- [ ] 网络访问、DNS 和回连尝试。
+- [~] shell control characters 和参数解析绕过（local policy 单测已有，container live case 待补）。
+- [~] 网络访问、DNS 和回连尝试（网络/DNS 集成用例已实现，当前主机跳过）。
 - [ ] 读取宿主用户目录、Docker socket 和敏感环境变量。
-- [ ] fork bomb、无限循环、磁盘填充和超大输出。
+- [~] fork bomb、无限循环、磁盘填充和超大输出（timeout/output 已实现，fork/disk 待 live 验证）。
 
 ### T2-04 磁盘限制兼容策略
 
-- [ ] 验证当前容器存储驱动是否支持 `--storage-opt=size=`。
+- [!] 验证当前容器存储驱动是否支持 `--storage-opt=size=`（当前 Windows 主机没有 Docker/Podman，无法取得 driver 或 live quota 证据）。
 - [ ] 不支持时使用受限临时卷或外部配额方案。
-- [ ] 禁止在无法实施磁盘限制时静默宣称已经限制。
+- [x] 禁止在无法实施磁盘限制时静默宣称已经限制（未验证时容器执行 fail-closed）。
 
 ### T2-05 安全报告
 
-- [ ] 生成 `docs/SECURITY_REPORT.md`。
-- [ ] 记录测试环境、镜像 digest、攻击用例、结果和剩余风险。
-- [ ] 报告明确 local backend 不是安全边界。
+- [x] 生成 `docs/SECURITY_REPORT.md`。
+- [x] 记录测试环境、镜像 digest、攻击用例、结果和剩余风险。
+- [x] 报告明确 local backend 不是安全边界。
 
 T2 完成门槛：
 
-- [ ] 容器测试在 Linux CI 中自动运行且全部通过。
+- [!] 容器测试已加入 Linux CI，但当前主机无法执行 live 验收；CPU/PID、攻击集和 storage quota 仍缺证据。
 - [ ] Windows 平台跳过的符号链接测试在 CI 中得到实际覆盖。
 - [ ] `container_sandbox.py` 覆盖率不低于 80%。
-- [ ] M3 所有安全验收项在报告中有证据。
+- [~] M3 已有安全报告和 fail-closed 证据，完整安全验收待 Linux CI 运行结果。
 
 ---
 

@@ -43,6 +43,9 @@ agentforge = ["api/static/*.html"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--strict-markers"
+markers = [
+  "integration: requires a live Docker or Podman runtime",
+]
 
 [tool.ruff]
 target-version = "py311"

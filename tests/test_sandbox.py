@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import time
 
 import pytest
 
 from agentforge.config import ModelConfig
+from agentforge.container_sandbox import ContainerExecutor
 from agentforge.paths import resolve_path
 from agentforge.sandbox import DEFAULT_DENY_COMMANDS, DEFAULT_DENY_PATTERNS, Sandbox
 from agentforge.tools import ReadFileTool, WriteFileTool, all_code_tools
@@ -154,3 +156,28 @@ def test_local_executor_stops_on_timeout_and_output_limit(tmp_path):
     )
     assert output.output_limited
     assert len(output.stdout) <= 1024
+
+
+def test_container_diagnostics_and_explicit_backend_fail_closed(monkeypatch, tmp_path):
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    sandbox = Sandbox(backend="auto")
+    diagnostic = ContainerExecutor(sandbox).diagnose().to_dict()
+    assert diagnostic["available"] is False
+    assert diagnostic["storage_limit_status"] == "unavailable"
+    assert diagnostic["image_pinned"] is True
+
+    result = Sandbox(backend="docker").execute([sys.executable, "-c", "print('no')"], cwd=str(tmp_path))
+    assert result.returncode is None
+    assert "unavailable" in (result.error or "")
+
+
+def test_auto_container_fallback_is_recorded(monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    events = []
+    sandbox = Sandbox(backend="auto", decision_sink=events.append)
+    with caplog.at_level("WARNING"):
+        result = sandbox.execute([sys.executable, "-c", "print('local')"], cwd=str(tmp_path))
+    assert result.returncode == 0
+    assert "local" in result.stdout
+    assert any(event["action"] == "backend_fallback" for event in events)
+    assert "falling back to local" in caplog.text

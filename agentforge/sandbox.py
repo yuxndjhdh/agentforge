@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shlex
@@ -16,6 +17,10 @@ import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Sequence
+
+from .config import DEFAULT_SANDBOX_IMAGE
+
+logger = logging.getLogger(__name__)
 
 SECRET_ENV = (
     "HARNESS_LLM_KEY",
@@ -93,7 +98,7 @@ class Sandbox:
     memory_limit_mb: int = 512
     pids_limit: int = 128
     disk_limit_mb: int = 1024
-    image: str = "python:3.13-slim"
+    image: str = DEFAULT_SANDBOX_IMAGE
     policy_version: str = POLICY_VERSION
     decision_sink: Callable[[dict], None] | None = field(default=None, repr=False, compare=False)
     cancel_event: threading.Event | None = field(default=None, repr=False, compare=False)
@@ -205,7 +210,8 @@ class Sandbox:
             from .container_sandbox import ContainerExecutor
 
             container = ContainerExecutor(self)
-            if container.available:
+            diagnostic = container.diagnose()
+            if diagnostic.available:
                 return container.execute(
                     argv,
                     cwd=cwd,
@@ -214,7 +220,23 @@ class Sandbox:
                     max_output_bytes=limit,
                 )
             if self.backend in {"docker", "podman"}:
-                return ExecutionResult(None, "", "", error="container runtime is unavailable")
+                return ExecutionResult(
+                    None,
+                    "",
+                    "",
+                    error=diagnostic.error or "container runtime is unavailable",
+                )
+            reason = diagnostic.error or "container runtime is unavailable"
+            logger.warning("sandbox auto backend falling back to local execution: %s", reason)
+            self._record(
+                PolicyDecision(
+                    True,
+                    "backend_fallback",
+                    f"auto backend fell back to local: {reason}",
+                    raw,
+                    self.policy_version,
+                )
+            )
         try:
             proc = subprocess.Popen(
                 argv,
@@ -291,6 +313,12 @@ class Sandbox:
             output_limited=output_limited.is_set(),
         )
 
+    def container_diagnostics(self) -> dict[str, object]:
+        """Return a non-mutating Docker/Podman availability and limit report."""
+        from .container_sandbox import ContainerExecutor
+
+        return ContainerExecutor(self).diagnose().to_dict()
+
     def _record(self, decision: PolicyDecision) -> None:
         if self.decision_sink is not None:
             payload = {
@@ -334,7 +362,7 @@ class Sandbox:
             memory_limit_mb=int(getattr(cfg, "sandbox_memory_limit_mb", 512)),
             pids_limit=int(getattr(cfg, "sandbox_pids_limit", 128)),
             disk_limit_mb=int(getattr(cfg, "sandbox_disk_limit_mb", 1024)),
-            image=str(getattr(cfg, "sandbox_image", "python:3.13-slim")),
+            image=str(getattr(cfg, "sandbox_image", DEFAULT_SANDBOX_IMAGE)),
             policy_version=POLICY_VERSION,
         )
 

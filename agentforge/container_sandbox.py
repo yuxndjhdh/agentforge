@@ -14,10 +14,27 @@ import shutil
 import subprocess
 import threading
 import time
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Sequence
 
 from .sandbox import ExecutionResult, Sandbox, _terminate_process_tree
+
+
+@dataclass(frozen=True)
+class ContainerRuntimeDiagnostic:
+    requested: str
+    runtime: str | None
+    available: bool
+    version: str | None
+    storage_driver: str | None
+    storage_limit_status: str
+    image: str
+    image_pinned: bool
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return asdict(self)
 
 
 class ContainerExecutor:
@@ -28,6 +45,39 @@ class ContainerExecutor:
     @property
     def available(self) -> bool:
         return self.runtime is not None
+
+    def diagnose(self) -> ContainerRuntimeDiagnostic:
+        if self.runtime is None:
+            return ContainerRuntimeDiagnostic(
+                requested=self.sandbox.backend,
+                runtime=None,
+                available=False,
+                version=None,
+                storage_driver=None,
+                storage_limit_status="unavailable",
+                image=self.sandbox.image,
+                image_pinned=_is_pinned_image(self.sandbox.image),
+                error="container runtime unavailable: docker/podman executable was not found",
+            )
+        version = _probe(self.runtime, ["version", "--format", "{{.Server.Version}}"])
+        if version is None and Path(self.runtime).name.lower().startswith("podman"):
+            version = _probe(self.runtime, ["version", "--format", "{{.Version.Version}}"])
+        driver = _probe(self.runtime, ["info", "--format", "{{.Driver}}"])
+        if driver is None and Path(self.runtime).name.lower().startswith("podman"):
+            driver = _probe(self.runtime, ["info", "--format", "{{.store.graphDriverName}}"])
+        storage_status = _storage_limit_status(driver, self.sandbox.disk_limit_mb)
+        error = None if version else "container runtime did not return a server version"
+        return ContainerRuntimeDiagnostic(
+            requested=self.sandbox.backend,
+            runtime=self.runtime,
+            available=version is not None,
+            version=version,
+            storage_driver=driver,
+            storage_limit_status=storage_status,
+            image=self.sandbox.image,
+            image_pinned=_is_pinned_image(self.sandbox.image),
+            error=error,
+        )
 
     def _find_runtime(self) -> str | None:
         requested = self.sandbox.backend
@@ -56,7 +106,6 @@ class ContainerExecutor:
             f"--memory={max(16, self.sandbox.memory_limit_mb)}m",
             f"--pids-limit={max(16, self.sandbox.pids_limit)}",
             "--read-only",
-            "--tmpfs=/tmp:rw,size=64m,noexec,nosuid",
             "-v",
             f"{root}:/workspace:rw",
             "-w",
@@ -73,9 +122,8 @@ class ContainerExecutor:
         for name, value in safe_env.items():
             cmd.extend(["-e", f"{name}={value}"])
         if self.sandbox.disk_limit_mb > 0:
-            # Not all Docker storage drivers support this option. It is kept
-            # explicit so deployment can reject unsupported limits rather than
-            # silently claiming a disk quota that is not enforced.
+            # The option is intentionally explicit. Unsupported drivers fail
+            # closed in execute() instead of silently claiming a quota.
             cmd.append(f"--storage-opt=size={max(64, self.sandbox.disk_limit_mb)}m")
         cmd.extend([self.sandbox.image, *map(str, argv)])
         return cmd
@@ -89,6 +137,26 @@ class ContainerExecutor:
         timeout: float | None = None,
         max_output_bytes: int = 256_000,
     ) -> ExecutionResult:
+        diagnostic = self.diagnose()
+        if not diagnostic.available:
+            return ExecutionResult(None, "", "", error=diagnostic.error or "container runtime unavailable")
+        if not diagnostic.image_pinned:
+            return ExecutionResult(
+                None,
+                "",
+                "",
+                error="sandbox image must be pinned by a sha256 digest",
+            )
+        if self.sandbox.disk_limit_mb > 0 and diagnostic.storage_limit_status != "supported":
+            return ExecutionResult(
+                None,
+                "",
+                "",
+                error=(
+                    "disk quota cannot be verified for container storage driver "
+                    f"{diagnostic.storage_driver or 'unknown'}; refusing to run"
+                ),
+            )
         try:
             command = self.command(argv, cwd, env)
             proc = subprocess.Popen(
@@ -161,3 +229,37 @@ class ContainerExecutor:
             timed_out=timed_out,
             output_limited=output_limited.is_set(),
         )
+
+
+def _probe(runtime: str, args: list[str]) -> str | None:
+    try:
+        result = subprocess.run(
+            [runtime, *args],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    value = result.stdout.strip()
+    return value or None
+
+
+def _is_pinned_image(image: str) -> bool:
+    return "@sha256:" in str(image).lower()
+
+
+def _storage_limit_status(driver: str | None, disk_limit_mb: int) -> str:
+    if disk_limit_mb <= 0:
+        return "disabled"
+    if not driver:
+        return "unknown"
+    # Docker's size storage-opt requires a filesystem and daemon-specific
+    # quota support. Do not label common drivers supported without probing the
+    # actual daemon configuration; an explicit integration run must verify it.
+    return "requires-live-probe"

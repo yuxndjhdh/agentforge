@@ -132,6 +132,15 @@ def cmd_selftest(args) -> None:
     print(res.trace.render())
 
 
+def cmd_sandbox_diagnose(args) -> None:
+    import json
+
+    from .sandbox import Sandbox
+
+    cfg = load_config()
+    print(json.dumps(Sandbox.from_config(cfg).container_diagnostics(), ensure_ascii=False, indent=2))
+
+
 def cmd_verify(args) -> int:
     from .code_tasks import BUILTIN_TASKS
     from .verify import run_verified
@@ -217,6 +226,11 @@ def main(argv=None) -> int:
     p_self.add_argument("--repo", default=None, help="自检用仓库（缺省用临时样例目录）")
     p_self.add_argument("--out", default="runs", help="trace 输出目录")
     p_self.set_defaults(fn=cmd_selftest)
+
+    p_sandbox = sub.add_parser("sandbox", help="检查容器沙箱运行时")
+    sandbox_sub = p_sandbox.add_subparsers(dest="sandbox_cmd", required=True)
+    p_sandbox_diag = sandbox_sub.add_parser("diagnose", help="诊断 Docker/Podman 和磁盘限制能力")
+    p_sandbox_diag.set_defaults(fn=cmd_sandbox_diagnose)
 
     p_verify = sub.add_parser("verify", help="闭环自检：任务+验真+未过重试")
     p_verify.add_argument("task", help="任务名（BUILTIN_TASKS 里）")

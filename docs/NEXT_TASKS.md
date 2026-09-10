@@ -421,13 +421,13 @@ docker version
 
 ## 12. 当前下一步
 
-T0～T5 的代码、测试和文档工作已完成。后续只处理外部环境阻塞和发布工程化：
+T0～T5 的代码、测试和文档工作已完成。后续只处理外部环境阻塞和发布收尾：
 
 1. 在配置 `HARNESS_LLM_KEY` 后执行 T4-04 的四组真实 benchmark，并保留完整报告与失败 trace。
 2. 在 Linux Docker CI 中完成 T2 的 live CPU/PID、攻击集和 storage quota 验收。
-3. 按 T6 清单生成完整传递依赖锁、构建产物、发布文档和 release tag。
+3. 在外部验证完成后保存最终 benchmark/security 报告，并按 T6 清单完成正式发布复现。
 
-在这五项完成前，不开始复杂 UI、多 Agent 或额外模型接入。
+在这些外部验证完成前，不开始复杂 UI、多 Agent 或额外模型接入。
 
 ## 13. 完成记录
 
@@ -438,4 +438,4 @@ T0～T5 的代码、测试和文档工作已完成。后续只处理外部环境
 | 2026-09-10 | T3-01~T3-04 | `40e3ecf`; `docs/MEMORY_CONTEXT_REPORT.md` | 完成 project/user/run-local 隔离、并发与损坏恢复、恶意记忆边界、tiktoken/字符 fallback 和预算 trace。 |
 | 2026-09-10 | T4-01~T4-03 | `d833357`; `docs/BENCHMARK_TASK_AUDIT.md` | 统一 CLI/API 任务选择，补精确行为验收、seed/config snapshot、fake solver 报告和 pass@1/3/5；真实实验因缺少 `HARNESS_LLM_KEY` 未执行。 |
 | 2026-09-10 | T5-01~T5-05 | `9aa25f4` | Benchmark job SQLite 持久化、run resume API、运行级 trace/可选 OTLP、Prometheus histogram 和真实 worker E2E 已完成；本机未配置外部 OTLP 接收端。 |
-| 2026-09-10 | T6-01~T6-03 | 待提交 | pip-compile 传递依赖锁、wheel/sdist fresh-venv 安装、0.3.0 元数据、API/packaging CI job 和无模型演示已完成；Python 3.11/3.12、远端 CI、Docker live 和真实 benchmark 仍待外部环境。 |
+| 2026-09-10 | T6-01~T6-03 | `b9cb3ce` | pip-compile 传递依赖锁、wheel/sdist fresh-venv 安装、0.3.0 元数据、API/packaging CI job 和无模型演示已完成；Python 3.11/3.12、远端 CI、Docker live 和真实 benchmark 仍待外部环境。 |

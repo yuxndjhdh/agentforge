@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentForge Runs</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; }
+    body { margin: 0; background: #f4f5f7; color: #20242a; }
+    main { max-width: 1050px; margin: 0 auto; padding: 28px 18px 60px; }
+    h1 { font-size: 22px; margin: 0 0 22px; }
+    form, section { background: #fff; border: 1px solid #d9dde3; border-radius: 6px; padding: 18px; margin-bottom: 16px; }
+    form { display: grid; grid-template-columns: 1fr 2fr auto; gap: 10px; align-items: end; }
+    label { display: grid; gap: 5px; font-size: 12px; color: #5b6572; }
+    input { border: 1px solid #c7ccd4; border-radius: 4px; padding: 9px; font: inherit; }
+    button { border: 0; border-radius: 4px; background: #1667c7; color: white; padding: 10px 14px; cursor: pointer; }
+    button:hover { background: #0d559f; }
+    .meta { display: flex; flex-wrap: wrap; gap: 18px; font-size: 13px; }
+    .status { font-weight: 650; }
+    pre { overflow: auto; background: #171a1f; color: #e8edf4; border-radius: 4px; padding: 14px; font-size: 12px; line-height: 1.45; }
+    @media (max-width: 700px) { form { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>AgentForge Runs</h1>
+  <form id="run-form">
+    <label>Repository<input id="repo" required placeholder="C:\\path\\to\\repo"></label>
+    <label>Task<input id="task" required placeholder="Describe the code change"></label>
+    <button type="submit">Start run</button>
+  </form>
+  <section>
+    <div class="meta"><span>Run ID: <strong id="run-id">-</strong></span><span>Status: <strong id="status">-</strong></span></div>
+    <pre id="trace">Submit a run to inspect its trace.</pre>
+  </section>
+</main>
+<script>
+const form = document.querySelector('#run-form');
+const id = document.querySelector('#run-id');
+const status = document.querySelector('#status');
+const trace = document.querySelector('#trace');
+let timer;
+form.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const response = await fetch('/runs', { method: 'POST', headers: {'content-type': 'application/json'},
+    body: JSON.stringify({repo: document.querySelector('#repo').value, task: document.querySelector('#task').value}) });
+  const data = await response.json();
+  if (!response.ok) { trace.textContent = JSON.stringify(data, null, 2); return; }
+  id.textContent = data.id; status.textContent = data.status;
+  clearInterval(timer); timer = setInterval(() => refresh(data.id), 1000); refresh(data.id);
+});
+async function refresh(runId) {
+  const [runResponse, traceResponse] = await Promise.all([fetch(`/runs/${runId}`), fetch(`/runs/${runId}/trace`)]);
+  const run = await runResponse.json(); const detail = await traceResponse.json();
+  status.textContent = run.status; trace.textContent = JSON.stringify(detail, null, 2);
+  if (['succeeded', 'failed', 'cancelled'].includes(run.status)) clearInterval(timer);
+}
+</script>
+</body>
+</html>

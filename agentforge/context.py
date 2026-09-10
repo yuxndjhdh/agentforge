@@ -13,13 +13,13 @@ smolagents 每步通过 ``write_memory_to_messages()`` 重新从 ``memory.steps`
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 try:  # smolagents 通常已安装；缺省时退化为轻量替身，便于隔离测试
     from smolagents.models import ChatMessage, MessageRole
 except Exception:  # pragma: no cover
-    ChatMessage = None  # type: ignore
-    MessageRole = None  # type: ignore
+    ChatMessage = None
+    MessageRole = None
 
 # 一个 step 里读取的观察/想法给摘要时截断的长度
 _DIGEST_OBS_CHARS = 160
@@ -28,9 +28,8 @@ _DIGEST_OBS_CHARS = 160
 def _role(m: Any) -> str:
     """消息角色字符串（MessageRole 是 str-enum，取 .value；否则回退 str）。"""
     r = getattr(m, "role", None)
-    if hasattr(r, "value"):
-        return r.value
-    return str(r or "").replace("MessageRole.", "").lower()
+    value = getattr(r, "value", None)
+    return str(value if value is not None else (r or "")).replace("MessageRole.", "").lower()
 
 
 def _msg_text(m: Any) -> str:
@@ -125,9 +124,23 @@ def compact_messages(
     messages: list,
     max_chars: int,
     min_tail_steps: int = 4,
+    *,
+    token_counter: Callable[[list], int] | None = None,
+    max_tokens: int | None = None,
 ) -> tuple[list, dict]:
-    """超预算则折叠最旧步；返回 `(新消息串, stats)`。不修改入参。"""
+    """超字符或 token 预算则折叠最旧步；不修改入参。
+
+    ``token_counter`` 是可插拔的 provider tokenizer；未提供时只使用字符
+    预算。输入、输出 token 会记录到 stats，便于 benchmark 做真实成本统计。
+    """
     in_chars = count_chars(messages)
+    counter = token_counter
+    if counter is None and max_tokens is not None:
+        # A deterministic fallback is useful when a provider tokenizer is not
+        # installed; reports should treat this as an estimate.
+        def counter(items):
+            return max(1, count_chars(items) // 4)
+    in_tokens = counter(messages) if counter else None
     stats = {
         "compressed": False,
         "in_chars": in_chars,
@@ -136,8 +149,12 @@ def compact_messages(
         "dropped_steps": 0,
         "kept_steps": 0,
         "boundary_is_assistant": bool(messages and _role(messages[-1]) == "assistant"),
+        "in_tokens": in_tokens,
+        "out_tokens": in_tokens,
+        "max_tokens": max_tokens,
     }
-    if in_chars <= max_chars or not messages:
+    within_tokens = max_tokens is None or (in_tokens is not None and in_tokens <= max_tokens)
+    if (in_chars <= max_chars and within_tokens) or not messages:
         return messages, stats
 
     prelude, ranges = _step_ranges(messages)
@@ -148,13 +165,18 @@ def compact_messages(
     # 确定保留步数：尽量多保留最近步，但要在预算内；最低不低于 min_tail_steps。
     # 每多丢一步，数字符约留下 ~160 字符摘要，而原步通常更大（观测往往 2000 字符量级），
     # 所以「丢更多」净节省更多。这里从「全保留」开始，一次多丢一步直到满足预算。
-    prelude_chars = count_chars(messages[:prelude])
     keep_count = len(ranges)
     while keep_count > min_tail_steps:
         kept = ranges[-keep_count:]
-        kept_chars = prelude_chars + sum(count_chars(messages[s:e]) for s, e in kept)
+        candidate_msgs = list(messages[:prelude])
+        for start, end in kept:
+            candidate_msgs.extend(messages[start:end])
+        kept_chars = count_chars(candidate_msgs)
         digest_est = _digest_size(len(ranges) - keep_count)
-        if kept_chars + digest_est <= max_chars:
+        kept_tokens = counter(candidate_msgs) if counter else None
+        if kept_chars + digest_est <= max_chars and (
+            max_tokens is None or kept_tokens is None or kept_tokens <= max_tokens
+        ):
             break
         keep_count -= 1
     dropped = ranges[:-keep_count] if keep_count < len(ranges) else []
@@ -175,6 +197,7 @@ def compact_messages(
         kept_msgs.extend(messages[start:end])
 
     out_chars = count_chars(kept_msgs)
+    out_tokens = counter(kept_msgs) if counter else None
     # 摘要后 / prelude 后的第一条必须是 assistant（整步起点），保证 assistant↔observation 配对完好
     first_kept_step = kept_msgs[prelude + (1 if inserted else 0) :]
     boundary_is_assistant = bool(first_kept_step and _role(first_kept_step[0]) == "assistant")
@@ -187,6 +210,7 @@ def compact_messages(
             "dropped_steps": len(dropped),
             "kept_steps": len(kept_ranges),
             "boundary_is_assistant": boundary_is_assistant,
+            "out_tokens": out_tokens,
         }
     )
     return kept_msgs, stats

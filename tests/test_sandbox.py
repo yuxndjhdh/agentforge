@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import os
+import sys
+import time
+
+import pytest
+
 from agentforge.config import ModelConfig
-from agentforge.sandbox import Sandbox, DEFAULT_DENY_COMMANDS, DEFAULT_DENY_PATTERNS
-from agentforge.tools import all_code_tools
+from agentforge.paths import resolve_path
+from agentforge.sandbox import DEFAULT_DENY_COMMANDS, DEFAULT_DENY_PATTERNS, Sandbox
+from agentforge.tools import ReadFileTool, WriteFileTool, all_code_tools
 
 
 def test_deny_rm_rf_but_allow_python():
@@ -112,3 +119,38 @@ def test_mutating_tools_use_passed_sandbox():
             assert t.sandbox is sb
         else:
             assert t.sandbox is not sb
+
+
+def test_path_boundary_rejects_symlink_and_hardlink(tmp_path):
+    outside = tmp_path.parent / "agentforge-outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+    link = tmp_path / "linked.txt"
+    try:
+        os.link(outside, link)
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable: {exc}")
+    assert resolve_path(str(tmp_path), "linked.txt", allow_missing=False, reject_hardlink=True).path is None
+    assert "Error" in ReadFileTool(str(tmp_path)).forward("linked.txt")
+    assert "Error" in WriteFileTool(str(tmp_path)).forward("linked.txt", "overwrite")
+
+    symlink = tmp_path / "symlink.txt"
+    try:
+        symlink.symlink_to(outside)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+    assert resolve_path(str(tmp_path), "symlink.txt", allow_missing=False).path is None
+    assert "Error" in ReadFileTool(str(tmp_path)).forward("symlink.txt")
+
+
+def test_local_executor_stops_on_timeout_and_output_limit(tmp_path):
+    sandbox = Sandbox(backend="local", timeout=0.2, max_output_bytes=1024)
+    started = time.monotonic()
+    timed_out = sandbox.execute([sys.executable, "-c", "import time; time.sleep(2)"], cwd=str(tmp_path))
+    assert timed_out.timed_out
+    assert time.monotonic() - started < 1.5
+
+    output = sandbox.execute(
+        [sys.executable, "-c", "print('x' * 1000000)"], cwd=str(tmp_path), timeout=5
+    )
+    assert output.output_limited
+    assert len(output.stdout) <= 1024

@@ -15,15 +15,18 @@ from __future__ import annotations
 import hashlib
 import math
 import os
-import subprocess
+import shlex
 import tempfile
+import time
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 
 from .config import ModelConfig
 from .harness import _now_id, make_agent
+from .paths import resolve_path
+from .sandbox import Sandbox
 from .trace import RunTrace
 
 DEFAULT_IGNORED = (".git", ".venv", "__pycache__", "node_modules", ".pytest_cache", ".env")
@@ -37,8 +40,11 @@ def _skip(name: str, ignored: tuple[str, ...]) -> bool:
 
 def hash_tree(workdir: str, ignored: tuple[str, ...] = DEFAULT_IGNORED) -> str:
     """对仓库文件树做确定性哈希：每个文件 sha256(relpath \\0 content)，汇总排序。"""
+    root = resolve_path(workdir, ".", allow_missing=False).path
+    if root is None:
+        return EMPTY_TREE
     snapshots: list[tuple[str, bytes]] = []
-    for dirpath, dirnames, filenames in os.walk(workdir):
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         dirnames[:] = [d for d in dirnames if not _skip(d, ignored)]
         for fn in filenames:
             if _skip(fn, ignored):
@@ -46,8 +52,25 @@ def hash_tree(workdir: str, ignored: tuple[str, ...] = DEFAULT_IGNORED) -> str:
             fp = os.path.join(dirpath, fn)
             if os.path.islink(fp):
                 continue
-            with open(fp, "rb") as f:
-                snapshots.append((os.path.relpath(fp, workdir).replace(os.sep, "/"), f.read()))
+            try:
+                if os.stat(fp, follow_symlinks=False).st_nlink > 1:
+                    continue
+            except OSError:
+                continue
+            safe = resolve_path(
+                root,
+                os.path.relpath(fp, root),
+                allow_missing=False,
+                reject_symlink=True,
+                reject_hardlink=True,
+            )
+            if safe.path is None:
+                continue
+            try:
+                with open(safe.path, "rb") as f:
+                    snapshots.append((os.path.relpath(safe.path, root).replace(os.sep, "/"), f.read()))
+            except OSError:
+                continue
     return _hash_snapshots(snapshots)
 
 
@@ -55,9 +78,11 @@ def hash_tree_dict(tree: dict[str, str], ignored: tuple[str, ...] = DEFAULT_IGNO
     """对 gold_tree（path -> content）直接做同样的树哈希，无需落盘。"""
     snapshots: list[tuple[str, bytes]] = []
     for rel in sorted(tree):
+        if not isinstance(rel, str) or not _valid_relative_name(rel):
+            continue
         if any(_skip(part, ignored) for part in Path(rel).parts):
             continue
-        snapshots.append((rel, tree[rel].encode("utf-8")))
+        snapshots.append((rel.replace("\\", "/"), tree[rel].encode("utf-8")))
     return _hash_snapshots(snapshots)
 
 
@@ -71,33 +96,106 @@ def _hash_snapshots(snapshots: list[tuple[str, bytes]]) -> str:
     return acc.hexdigest()
 
 
+def _valid_relative_name(rel: str) -> bool:
+    if not rel or "\x00" in rel or os.path.isabs(rel):
+        return False
+    normalized = rel.replace("\\", "/")
+    parts = [part for part in normalized.split("/") if part not in ("", ".")]
+    return bool(parts) and ".." not in parts
+
+
 @dataclass
 class Check:
     kind: str  # "file_contains" | "command" | "file_absent"
     path: str = ""
     needles: list[str] = field(default_factory=list)
-    command: str = ""
+    command: str | Sequence[str] = ""
     stdout_contains: list[str] = field(default_factory=list)
+    stderr_contains: list[str] = field(default_factory=list)
+    stdout_not_contains: list[str] = field(default_factory=list)
+    timeout: float = 30.0
+
+
+@dataclass(frozen=True)
+class CommandCheckResult:
+    """保留 stdout/stderr 分离语义的验收命令结果。"""
+
+    returncode: int | None
+    stdout: str
+    stderr: str
+    timed_out: bool = False
+    output_limited: bool = False
+    error: str | None = None
+
+
+def _command_argv(command: str | Sequence[str]) -> list[str]:
+    if isinstance(command, str):
+        # 验收命令来自任务定义，不来自模型；仍使用 shell=False，避免验收器
+        # 意外继承宿主 shell 的重定向、环境和控制语义。
+        return shlex.split(command, posix=True)
+    return [str(part) for part in command]
+
+
+def run_check_command(
+    command: str | Sequence[str],
+    workdir: str,
+    *,
+    timeout: float = 30.0,
+) -> CommandCheckResult:
+    """在受限工作目录中运行一条可信验收命令（不启用 shell）。"""
+    try:
+        argv = _command_argv(command)
+    except ValueError as exc:
+        return CommandCheckResult(None, "", "", error=f"invalid command: {exc}")
+    if not argv:
+        return CommandCheckResult(None, "", "", error="empty command")
+    result = Sandbox(
+        timeout=max(0.01, float(timeout)),
+        backend="local",
+        max_output_bytes=256_000,
+    ).execute(argv, cwd=workdir)
+    return CommandCheckResult(
+        result.returncode,
+        result.stdout,
+        result.stderr,
+        timed_out=result.timed_out,
+        output_limited=result.output_limited,
+        error=result.error,
+    )
 
 
 def check_passes(check: Check, workdir: str) -> bool:
     if check.kind == "file_contains":
-        fp = os.path.join(workdir, check.path)
-        if not os.path.isfile(fp):
+        resolved = resolve_path(
+            workdir,
+            check.path,
+            allow_missing=False,
+            reject_symlink=True,
+            reject_hardlink=True,
+        )
+        if not resolved.path or not os.path.isfile(resolved.path):
             return False
-        data = open(fp, encoding="utf-8", errors="replace").read()
+        try:
+            data = open(resolved.path, encoding="utf-8", errors="replace").read()
+        except OSError:
+            return False
         return all(n in data for n in check.needles)
     if check.kind == "file_absent":
-        return not os.path.exists(os.path.join(workdir, check.path))
-    if check.kind == "command":
-        try:
-            cp = subprocess.run(
-                check.command, shell=True, cwd=workdir, capture_output=True, text=True, timeout=30
-            )
-        except Exception:
+        # lexists 也会把悬空符号链接视为存在；验收不能借此把越界链接
+        # 当作“文件不存在”。
+        resolved = resolve_path(workdir, check.path, allow_missing=True, reject_symlink=True)
+        if resolved.path is None:
             return False
-        out = (cp.stdout or "") + (cp.stderr or "")
-        return all(s in out for s in check.stdout_contains)
+        return not os.path.lexists(resolved.path)
+    if check.kind == "command":
+        result = run_check_command(check.command, workdir, timeout=check.timeout)
+        if result.error or result.timed_out or result.returncode != 0:
+            return False
+        if not all(s in result.stdout for s in check.stdout_contains):
+            return False
+        if not all(s in result.stderr for s in check.stderr_contains):
+            return False
+        return all(s not in result.stdout for s in check.stdout_not_contains)
     return False
 
 
@@ -109,15 +207,76 @@ class CodeTask:
     gold_tree: dict[str, str] | None = None
     checks: list[Check] = field(default_factory=list)
     ignored: tuple[str, ...] = DEFAULT_IGNORED
+    difficulty: str = "medium"
+    tags: tuple[str, ...] = ()
+    resource_limits: dict[str, float | int] = field(default_factory=dict)
+    gold_patch: str | None = None
     _gold_hash: str | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        if not self.name or not self.name.strip():
+            raise ValueError("CodeTask name cannot be empty")
+        if not callable(self.build_seed):
+            raise ValueError(f"CodeTask {self.name!r} requires a callable build_seed")
+        if self.difficulty not in {"easy", "medium", "hard"}:
+            raise ValueError(f"unsupported difficulty: {self.difficulty!r}")
+        if self.gold_tree is None and not self.checks:
+            raise ValueError(
+                f"CodeTask {self.name!r} must define gold_tree or at least one check"
+            )
+        valid_kinds = {"file_contains", "command", "file_absent"}
+        for check in self.checks:
+            if check.kind not in valid_kinds:
+                raise ValueError(f"unsupported check kind: {check.kind!r}")
+            if check.kind == "file_contains" and not check.path:
+                raise ValueError("file_contains check requires path")
+            if check.kind == "file_absent" and not check.path:
+                raise ValueError("file_absent check requires path")
+            if check.kind == "command" and not check.command:
+                raise ValueError("command check requires command")
+            if check.timeout <= 0:
+                raise ValueError("command check timeout must be positive")
+        if self.gold_tree is not None:
+            for rel in self.gold_tree:
+                if not isinstance(rel, str) or not _valid_relative_name(rel):
+                    raise ValueError(f"gold_tree path escapes workdir: {rel!r}")
+
+    def to_spec(self) -> dict:
+        return {
+            "name": self.name,
+            "instruction": self.instruction,
+            "difficulty": self.difficulty,
+            "tags": list(self.tags),
+            "resource_limits": dict(self.resource_limits),
+            "has_gold_tree": self.gold_tree is not None,
+            "has_gold_patch": self.gold_patch is not None,
+            "checks": [
+                {
+                    "kind": check.kind,
+                    "path": check.path,
+                    "command": check.command,
+                    "stdout_contains": list(check.stdout_contains),
+                    "stderr_contains": list(check.stderr_contains),
+                }
+                for check in self.checks
+            ],
+        }
 
     def gold_hash(self) -> str | None:
         if self._gold_hash is None:
-            self._gold_hash = hash_tree_dict(self.gold_tree, self.ignored) if self.gold_tree else None
+            self._gold_hash = (
+                hash_tree_dict(self.gold_tree, self.ignored) if self.gold_tree is not None else None
+            )
         return self._gold_hash
 
 
 def eval_reward(workdir: str, task: CodeTask) -> int:
+    task.validate()
+    if resolve_path(workdir, ".", allow_missing=False).path is None:
+        return 0
     ok = True
     if task.gold_tree is not None:
         ok = ok and hash_tree(workdir, task.ignored) == task.gold_hash()
@@ -135,25 +294,62 @@ class EvalResult:
     trace: RunTrace | None = None
     diff: list[dict] | None = None
     trace_path: Path | None = None
+    cleaned_up: bool = False
+    elapsed_seconds: float = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
-def solve_task(cfg: ModelConfig, task: CodeTask, *, out_dir: str | Path = "runs/eval") -> EvalResult:
-    """在一份全新临时副本上跑任务，用终态判定 reward，失败时落盘 trace + diff。"""
-    wd = tempfile.mkdtemp(prefix="agentforge-eval-")
-    task.build_seed(wd)
-    agent = make_agent(cfg, wd)
-    answer = agent.run(task.instruction)
-    reward = eval_reward(wd, task)
-    run_id = _now_id()
-    trace = RunTrace.from_smol_agent(
-        agent, run_id=run_id, workdir=os.path.realpath(wd), task=task.instruction, model=cfg.model
-    )
-    diff = None
-    trace_path = None
-    if reward == 0:
-        diff = tree_diff(wd, task)
+def solve_task(
+    cfg: ModelConfig,
+    task: CodeTask,
+    *,
+    out_dir: str | Path = "runs/eval",
+    keep_workdir: bool = False,
+) -> EvalResult:
+    """在全新副本上运行并评测任务，默认在返回前清理临时目录。"""
+    task.validate()
+    temp_root = tempfile.TemporaryDirectory(prefix="agentforge-eval-")
+    wd = temp_root.name
+    started = time.perf_counter()
+    try:
+        task.build_seed(wd)
+        agent = make_agent(cfg, wd)
+        answer = agent.run(task.instruction)
+        reward = eval_reward(wd, task)
+        run_id = _now_id()
+        trace = RunTrace.from_smol_agent(
+            agent,
+            run_id=run_id,
+            workdir=os.path.realpath(wd),
+            task=task.instruction,
+            model=cfg.model,
+        )
+        diff = tree_diff(wd, task) if reward == 0 else None
         trace_path = trace.dump(Path(out_dir) / task.name / run_id / "trace.json")
-    return EvalResult(task.name, reward, wd, str(answer), trace, diff, trace_path)
+        action_steps = [step for step in trace.steps if step.get("kind") == "action"]
+        input_tokens = sum(
+            int((step.get("token_usage") or {}).get("input") or 0) for step in action_steps
+        )
+        output_tokens = sum(
+            int((step.get("token_usage") or {}).get("output") or 0) for step in action_steps
+        )
+        return EvalResult(
+            task.name,
+            reward,
+            wd,
+            str(answer),
+            trace,
+            diff,
+            trace_path,
+            cleaned_up=not keep_workdir,
+            elapsed_seconds=time.perf_counter() - started,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+    finally:
+        if not keep_workdir:
+            temp_root.cleanup()
 
 
 def tree_diff(wd: str, task: CodeTask) -> list[dict]:
@@ -200,7 +396,10 @@ def failure_feedback(wd: str, task: CodeTask) -> str:
 
 def _read_tree(wd: str, ignored: tuple[str, ...]) -> dict[str, str]:
     out: dict[str, str] = {}
-    for dirpath, dirnames, filenames in os.walk(wd):
+    root = resolve_path(wd, ".", allow_missing=False).path
+    if root is None:
+        return out
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         dirnames[:] = [d for d in dirnames if not _skip(d, ignored)]
         for fn in filenames:
             if _skip(fn, ignored):
@@ -208,19 +407,41 @@ def _read_tree(wd: str, ignored: tuple[str, ...]) -> dict[str, str]:
             fp = os.path.join(dirpath, fn)
             if os.path.islink(fp):
                 continue
-            out[os.path.relpath(fp, wd).replace(os.sep, "/")] = open(
-                fp, encoding="utf-8", errors="replace"
-            ).read()
+            try:
+                if os.stat(fp, follow_symlinks=False).st_nlink > 1:
+                    continue
+            except OSError:
+                continue
+            safe = resolve_path(
+                root,
+                os.path.relpath(fp, root),
+                allow_missing=False,
+                reject_symlink=True,
+                reject_hardlink=True,
+            )
+            if safe.path is None:
+                continue
+            try:
+                out[os.path.relpath(safe.path, root).replace(os.sep, "/")] = open(
+                    safe.path, encoding="utf-8", errors="replace"
+                ).read()
+            except OSError:
+                continue
     return out
 
 
 def analyze_failure(task: CodeTask, result: EvalResult) -> dict:
     steps = [s for s in (result.trace.steps if result.trace else []) if s.get("kind") == "action"]
-    errs = [
-        {"tool": s["tool_calls"][0]["name"], "obs": s.get("observation", "")[:120]}
-        for s in steps
-        if str(s.get("observation", "")).startswith("Error:")
-    ]
+    errs = []
+    for step in steps:
+        calls = step.get("tool_calls") or []
+        if str(step.get("observation", "")).startswith("Error:"):
+            errs.append(
+                {
+                    "tool": calls[0].get("name", "unknown") if calls else "unknown",
+                    "obs": str(step.get("observation", ""))[:120],
+                }
+            )
     if not steps:
         verdict = "did_not_act"
     elif errs:
@@ -246,7 +467,16 @@ def evaluate(
     k: int = 1,
     out_dir: str | Path = "runs/eval",
 ) -> dict:
-    success: Counter[str] = Counter()
+    if num_trials < 1:
+        raise ValueError("num_trials must be >= 1")
+    if not 1 <= k <= num_trials:
+        raise ValueError("k must satisfy 1 <= k <= num_trials")
+    for task in tasks:
+        task.validate()
+    names = [task.name for task in tasks]
+    if len(set(names)) != len(names):
+        raise ValueError("task names must be unique")
+    success: Counter[str] = Counter({name: 0 for name in names})
     failures: list[dict] = []
     episodes: list[dict] = []
     for task in tasks:
@@ -263,19 +493,39 @@ def evaluate(
                     "reward": res.reward,
                     "answer": res.answer[:200],
                     "trace_path": str(res.trace_path) if res.trace_path else None,
+                    "elapsed_seconds": res.elapsed_seconds,
+                    "steps": len([step for step in (res.trace.steps if res.trace else []) if step.get("kind") == "action"]),
+                    "input_tokens": res.input_tokens,
+                    "output_tokens": res.output_tokens,
+                    "failure_type": _failure_type(task, res),
                 }
             )
     n = len(tasks)
-    denom = n * num_trials
     return {
         "tasks": n,
         "num_trials": num_trials,
         "success": dict(success),
-        "pass@1": (sum(success.values()) / denom) if denom else 0.0,
+        "pass@1": pass_at_k(dict(success), num_trials, 1) if n else 0.0,
         "pass@k": pass_at_k(success, num_trials, k),
         "failures": failures,
         "episodes": episodes,
     }
+
+
+def _failure_type(task: CodeTask, result: EvalResult) -> str | None:
+    if result.reward:
+        return None
+    steps = [step for step in (result.trace.steps if result.trace else []) if step.get("kind") == "action"]
+    if not steps:
+        return "did_not_act"
+    if any(str(step.get("observation", "")).startswith("Error:") for step in steps):
+        return "tool_error"
+    if result.elapsed_seconds and result.elapsed_seconds >= 0:
+        # The executor already classifies timeout failures through its trace
+        # observation; keep this bucket deterministic for evaluator output.
+        if any("timed out" in str(step.get("observation", "")).lower() for step in steps):
+            return "timeout"
+    return "state_mismatch"
 
 
 def _comb(n: int, k: int) -> int:
@@ -285,8 +535,27 @@ def _comb(n: int, k: int) -> int:
 
 
 def pass_at_k(success_counts: dict[str, int], num_trials: int, k: int) -> float:
-    """组合估计：pass@k = Σ_task C(c,k)/C(N,k) / #tasks。"""
+    """按标准定义计算“至少一次成功”的组合估计器。
+
+    对每个任务，``c`` 是 N 次独立 episode 中成功的次数：
+    ``1 - C(N-c, k) / C(N, k)``。成功次数为零的任务必须保留在输入中，
+    否则平均值会被错误抬高。
+    """
+    if num_trials < 1:
+        raise ValueError("num_trials must be >= 1")
+    if not 1 <= k <= num_trials:
+        raise ValueError("k must satisfy 1 <= k <= num_trials")
     if not success_counts:
         return 0.0
-    total = sum(_comb(c, k) / _comb(num_trials, k) for c in success_counts.values())
+    denominator = _comb(num_trials, k)
+    if denominator == 0:  # defensive; validation above makes this unreachable
+        raise ValueError("invalid pass@k denominator")
+    probabilities = []
+    for task, count in success_counts.items():
+        if not isinstance(count, int) or isinstance(count, bool):
+            raise ValueError(f"success count for {task!r} must be an integer")
+        if count < 0 or count > num_trials:
+            raise ValueError(f"success count for {task!r} must be between 0 and num_trials")
+        probabilities.append(1.0 - (_comb(num_trials - count, k) / denominator))
+    total = sum(probabilities)
     return total / len(success_counts)

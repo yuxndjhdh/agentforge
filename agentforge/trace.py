@@ -1,12 +1,15 @@
-"""RunTrace：一次 agent 运行的步骤记录，可 dump/load JSON 并渲染到终端。
+"""一次运行的可审计 trace。
 
-MVP 里 trace 兼作 checkpoint：跑完后把 `agent.memory.steps` 的关键字段抽出来落盘。
-断点续跑则由 `run(task, reset=False)` 在同一 agent 上继续（见 harness.Session）。
+``RunTrace`` 仍支持从 smolagents 抽取兼容视图，但抽取可以指定 memory
+边界；新的 runtime 以增量事件为事实来源，最终 trace 只是一个原子导出的
+查询结果。
 """
 
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -34,14 +37,38 @@ class RunTrace:
     model: str = ""
     steps: list[dict] = field(default_factory=list)
     compression: list[dict] = field(default_factory=list)
+    status: str = "succeeded"
+    attempt_id: str | None = None
+    schema_version: int = 2
+    events: list[dict] = field(default_factory=list)
 
     @classmethod
-    def from_smol_agent(cls, agent, *, run_id: str, workdir: str, task: str, model: str = ""):
-        """从 smolagents agent 的 memory.steps 抽取精简步骤。"""
-        trace = cls(run_id=run_id, workdir=workdir, task=task, model=model)
+    def from_smol_agent(
+        cls,
+        agent,
+        *,
+        run_id: str,
+        workdir: str,
+        task: str,
+        model: str = "",
+        start_index: int = 0,
+        end_index: int | None = None,
+        status: str = "succeeded",
+        attempt_id: str | None = None,
+    ):
+        """从指定 memory.steps 区间抽取精简步骤。"""
+        trace = cls(
+            run_id=run_id,
+            workdir=workdir,
+            task=task,
+            model=model,
+            status=status,
+            attempt_id=attempt_id,
+        )
         trace.compression = list(getattr(getattr(agent, "model", None), "compressions", []) or [])
         memory = getattr(agent, "memory", None)
-        for st in getattr(memory, "steps", []) or []:
+        steps = getattr(memory, "steps", []) or []
+        for st in steps[max(0, start_index) : end_index]:
             kind = type(st).__name__
             if kind == "TaskStep":
                 trace.steps.append({"kind": "task", "task": st.task})
@@ -71,18 +98,34 @@ class RunTrace:
 
     def to_dict(self) -> dict:
         return {
+            "schema_version": self.schema_version,
             "run_id": self.run_id,
             "workdir": self.workdir,
             "task": self.task,
             "model": self.model,
+            "status": self.status,
+            "attempt_id": self.attempt_id,
             "steps": self.steps,
             "compression": self.compression,
+            "events": self.events,
         }
 
     def dump(self, path: str | Path) -> Path:
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(self.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        fd, temporary_name = tempfile.mkstemp(prefix=f".{p.name}.", dir=p.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+                stream.write(json.dumps(self.to_dict(), ensure_ascii=False, indent=2) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary_name, p)
+        finally:
+            if os.path.exists(temporary_name):
+                try:
+                    os.unlink(temporary_name)
+                except OSError:
+                    pass
         return p
 
     @classmethod
@@ -93,9 +136,17 @@ class RunTrace:
             workdir=data["workdir"],
             task=data["task"],
             model=data.get("model", ""),
+            status=data.get("status", "succeeded"),
+            attempt_id=data.get("attempt_id"),
+            schema_version=int(data.get("schema_version", 1)),
             steps=data.get("steps", []),
             compression=data.get("compression", []),
+            events=data.get("events", []),
         )
+
+    def add_event(self, event: dict) -> None:
+        """追加一个已持久化的 runtime event 到导出视图。"""
+        self.events.append(dict(event))
 
     def render(self) -> str:
         lines = [

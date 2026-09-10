@@ -1,3 +1,3 @@
-"""AgentForge：基于 smolagents 的本地代码 Agent Harness（最小 MVP）。"""
+"""AgentForge code-agent runtime, evaluation, and sandbox platform."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

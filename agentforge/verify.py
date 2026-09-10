@@ -29,6 +29,7 @@ class RunVerifiedResult:
     trace: RunTrace | None = None
     trace_path: Path | None = None
     workdir: str = ""
+    cleaned_up: bool = False
 
 
 def _feedback_prompt(instruction: str, feedback: str) -> str:
@@ -44,15 +45,20 @@ def run_verified(
     out_dir: str | Path = "runs/verify",
     agent=None,
     workdir: str | None = None,
+    keep_workdir: bool = False,
 ) -> RunVerifiedResult:
     """闭环：同一 agent 在新鲜副本上反复修任务直到权威 check 通过或触顶。
 
     `workdir` 缺省时自建一份全新副本（build_seed）；注入时跳过 build_seed，便于测试绑定。
     """
-    if workdir is None:
-        wd = tempfile.mkdtemp(prefix="agentforge-verify-")
+    owned_workdir = workdir is None
+    if owned_workdir:
+        temp_root = tempfile.TemporaryDirectory(prefix="agentforge-verify-")
+        wd = temp_root.name
         verify_task.build_seed(wd)
     else:
+        temp_root = None
+        assert workdir is not None
         wd = os.path.realpath(workdir)
     if agent is None:
         agent = make_agent(cfg, wd)
@@ -61,31 +67,56 @@ def run_verified(
     attempts: list[dict] = []
     prev_feedback = ""
     success = False
-    for attempt in range(max_attempts):
-        prompt = _feedback_prompt(task, prev_feedback) if attempt > 0 else task
-        answer = agent.run(prompt, reset=(attempt == 0))
-        reward = eval_reward(wd, verify_task)
-        feedback = failure_feedback(wd, verify_task)
-        attempts.append(
-            {"attempt": attempt, "reward": reward, "feedback": feedback, "answer": str(answer)[:200]}
-        )
-        if reward == 1:
-            success = True
-            break
-        prev_feedback = feedback
-
-    trace = RunTrace.from_smol_agent(
-        agent, run_id=run_id, workdir=os.path.realpath(wd), task=task, model=cfg.model
-    )
-    for a in attempts:
-        trace.add_manual("verify", attempt=a["attempt"], reward=a["reward"], feedback=a["feedback"])
-    trace_path = trace.dump(Path(out_dir) / run_id / "trace.json")
-    return RunVerifiedResult(
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be >= 1")
+    trace = RunTrace(
         run_id=run_id,
+        workdir=os.path.realpath(wd),
         task=task,
-        success=success,
-        attempts=attempts,
-        trace=trace,
-        trace_path=trace_path,
-        workdir=wd,
+        model=cfg.model,
+        status="running",
     )
+    try:
+        for attempt in range(max_attempts):
+            prompt = _feedback_prompt(task, prev_feedback) if attempt > 0 else task
+            before = len(getattr(getattr(agent, "memory", None), "steps", []) or [])
+            answer = agent.run(prompt, reset=(attempt == 0))
+            after = RunTrace.from_smol_agent(
+                agent,
+                run_id=run_id,
+                workdir=os.path.realpath(wd),
+                task=task,
+                model=cfg.model,
+                start_index=before,
+            )
+            trace.steps.extend(after.steps)
+            reward = eval_reward(wd, verify_task)
+            feedback = failure_feedback(wd, verify_task)
+            attempts.append(
+                {"attempt": attempt, "reward": reward, "feedback": feedback, "answer": str(answer)[:200]}
+            )
+            trace.add_manual(
+                "verify",
+                attempt=attempt,
+                reward=reward,
+                feedback=feedback,
+            )
+            if reward == 1:
+                success = True
+                break
+            prev_feedback = feedback
+        trace.status = "succeeded" if success else "failed"
+        trace_path = trace.dump(Path(out_dir) / run_id / "trace.json")
+        return RunVerifiedResult(
+            run_id=run_id,
+            task=task,
+            success=success,
+            attempts=attempts,
+            trace=trace,
+            trace_path=trace_path,
+            workdir=wd,
+            cleaned_up=bool(owned_workdir and not keep_workdir),
+        )
+    finally:
+        if temp_root is not None and not keep_workdir:
+            temp_root.cleanup()

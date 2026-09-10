@@ -22,7 +22,9 @@ from .trace import RunTrace
 def _utf8() -> None:
     if os.name == "nt":
         try:
-            sys.stdout.reconfigure(encoding="utf-8")  # 避免 rich 打印 token 时踩 GBK('¥')
+            reconfigure = getattr(sys.stdout, "reconfigure", None)
+            if callable(reconfigure):
+                reconfigure(encoding="utf-8")  # 避免 rich 打印 token 时踩 GBK('¥')
         except Exception:
             pass
 
@@ -47,7 +49,7 @@ def cmd_trace(args) -> None:
     print(RunTrace.load(args.path).render())
 
 
-def cmd_eval(args) -> None:
+def cmd_eval(args) -> int:
     from .code_tasks import BUILTIN_TASKS
     from .eval import evaluate
 
@@ -67,6 +69,60 @@ def cmd_eval(args) -> None:
         print(f"  FAIL [{f['task']}] {f['verdict']}")
         if f.get("diff"):
             print(f"        diff: {str(f['diff'])[:200]}")
+    return 0
+
+
+def cmd_benchmark(args) -> int:
+    from .benchmark import run_benchmark
+    from .code_tasks import BENCHMARK_TASKS
+
+    cfg = load_config()
+    tasks = BENCHMARK_TASKS
+    if args.tasks:
+        names = {name.strip() for name in args.tasks.split(",") if name.strip()}
+        tasks = [task for task in tasks if task.name in names]
+        if not tasks:
+            print(f"错误: 没有匹配的任务名 {args.tasks}", file=sys.stderr)
+            return 2
+    report = run_benchmark(
+        cfg,
+        tasks,
+        num_trials=args.trials,
+        k=args.k,
+        out_dir=args.out,
+    )
+    summary = report["summary"]
+    print(f"benchmark: {report['benchmark_version']}  tasks={summary['tasks']} episodes={summary['episodes']}")
+    print(f"pass@1={summary['pass@1']:.3f}  pass@{args.k}={summary['pass@k']:.3f}")
+    print(f"p50={summary['p50_latency_seconds']:.3f}s  p95={summary['p95_latency_seconds']:.3f}s")
+    print(f"report: {report['report_path']}")
+    return 0
+
+
+def cmd_serve(args) -> None:
+    from .api import create_app
+
+    try:
+        import uvicorn
+    except ImportError as exc:
+        raise RuntimeError("serve requires uvicorn; install agentforge[api]") from exc
+    uvicorn.run(create_app(load_config()), host=args.host, port=args.port)
+
+
+def cmd_memory(args) -> None:
+    from .memory import MemoryStore
+
+    store = MemoryStore(args.repo, project_id=args.project, user_id=args.user)
+    if args.memory_cmd == "delete":
+        print(store.delete(args.tier, args.key))
+    elif args.memory_cmd == "export":
+        import json
+
+        print(json.dumps(store.export(), ensure_ascii=False, indent=2))
+    elif args.memory_cmd == "audit":
+        import json
+
+        print(json.dumps(store.audit(args.limit), ensure_ascii=False, indent=2))
 
 
 def cmd_selftest(args) -> None:
@@ -76,7 +132,7 @@ def cmd_selftest(args) -> None:
     print(res.trace.render())
 
 
-def cmd_verify(args) -> None:
+def cmd_verify(args) -> int:
     from .code_tasks import BUILTIN_TASKS
     from .verify import run_verified
 
@@ -95,13 +151,14 @@ def cmd_verify(args) -> None:
     print(f"success: {res.success}")
     print(f"workdir: {res.workdir}")
     print(f"trace:   {res.trace_path}")
+    return 0
 
 
 def main(argv=None) -> int:
     _utf8()
     parser = argparse.ArgumentParser(
         prog="agentforge",
-        description="基于 smolagents 的本地代码 Agent Harness（最小 MVP）。",
+        description="面向代码仓库的 Agent 执行、验收、追踪和安全沙箱平台。",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -128,6 +185,33 @@ def main(argv=None) -> int:
     p_eval.add_argument("--tasks", default="", help="逗号分隔任务名，缺省全部")
     p_eval.add_argument("--out", default="runs/eval", help="失败轨迹落盘目录")
     p_eval.set_defaults(fn=cmd_eval)
+
+    p_bench = sub.add_parser("benchmark", help="运行可复现 benchmark 并生成报告")
+    p_bench.add_argument("--trials", type=int, default=1, help="每任务独立运行次数")
+    p_bench.add_argument("--k", type=int, default=1, help="计算 pass@k 的 k")
+    p_bench.add_argument("--tasks", default="", help="逗号分隔任务名，缺省为 benchmark 全部任务")
+    p_bench.add_argument("--out", default="runs/benchmarks/latest", help="报告输出目录")
+    p_bench.set_defaults(fn=cmd_benchmark)
+
+    p_serve = sub.add_parser("serve", help="启动 FastAPI 服务")
+    p_serve.add_argument("--host", default="127.0.0.1")
+    p_serve.add_argument("--port", type=int, default=8000)
+    p_serve.set_defaults(fn=cmd_serve)
+
+    p_memory = sub.add_parser("memory", help="管理项目记忆")
+    p_memory.add_argument("repo", help="仓库路径")
+    p_memory.add_argument("--project", default="default")
+    p_memory.add_argument("--user", default="default")
+    memory_sub = p_memory.add_subparsers(dest="memory_cmd", required=True)
+    p_delete = memory_sub.add_parser("delete", help="删除一条记忆")
+    p_delete.add_argument("tier", choices=("durable", "daily"))
+    p_delete.add_argument("key")
+    p_delete.set_defaults(fn=cmd_memory)
+    p_export = memory_sub.add_parser("export", help="导出记忆")
+    p_export.set_defaults(fn=cmd_memory)
+    p_audit = memory_sub.add_parser("audit", help="查看记忆审计日志")
+    p_audit.add_argument("--limit", type=int, default=100)
+    p_audit.set_defaults(fn=cmd_memory)
 
     p_self = sub.add_parser("selftest", help="不用 LLM 的自检（工具链 + trace 落盘）")
     p_self.add_argument("--repo", default=None, help="自检用仓库（缺省用临时样例目录）")

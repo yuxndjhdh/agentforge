@@ -66,6 +66,30 @@ def test_eval_reward_checks(tmp_path):
     assert eval_reward(wd, task) == 0
 
 
+def test_command_check_requires_zero_exit_and_stdout(tmp_path):
+    task = CodeTask(
+        name="command",
+        instruction="i",
+        build_seed=lambda w: None,
+        checks=[Check(kind="command", command="python -c \"import sys; print('ok'); sys.exit(2)\"", stdout_contains=["ok"])],
+    )
+    assert eval_reward(str(tmp_path), task) == 0
+    stderr_task = CodeTask(
+        name="stderr",
+        instruction="i",
+        build_seed=lambda w: None,
+        checks=[Check(kind="command", command="python -c \"import sys; print('ok', file=sys.stderr)\"", stdout_contains=["ok"])],
+    )
+    assert eval_reward(str(tmp_path), stderr_task) == 0
+
+
+def test_code_task_requires_acceptance_rule():
+    import pytest
+
+    with pytest.raises(ValueError):
+        CodeTask(name="invalid", instruction="i", build_seed=lambda w: None)
+
+
 def test_eval_reward_gold_tree(tmp_path):
     task = CodeTask(
         name="t",
@@ -83,8 +107,24 @@ def test_pass_at_k():
     assert pass_at_k({"a": 1}, 1, 1) == 1.0
     assert pass_at_k({"a": 0}, 1, 1) == 0.0
     assert pass_at_k({"a": 2}, 2, 1) == 1.0
-    assert pass_at_k({"a": 1}, 2, 2) == 0.0  # C(1,2)=0
+    assert pass_at_k({"a": 1}, 2, 2) == 1.0  # 至少一次成功
     assert abs(pass_at_k({"a": 1}, 2, 1) - 0.5) < 1e-9
+
+
+def test_pass_at_k_keeps_zero_success_tasks_in_denominator():
+    assert abs(pass_at_k({"success": 1, "failure": 0}, 2, 1) - 0.25) < 1e-9
+    assert pass_at_k({"success": 1, "failure": 0}, 2, 2) == 0.5
+
+
+def test_pass_at_k_validates_inputs():
+    import pytest
+
+    with pytest.raises(ValueError):
+        pass_at_k({"a": 0}, 0, 1)
+    with pytest.raises(ValueError):
+        pass_at_k({"a": 0}, 2, 0)
+    with pytest.raises(ValueError):
+        pass_at_k({"a": 0}, 2, 3)
 
 
 def test_analyze_failure_tool_error():

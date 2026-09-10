@@ -1,11 +1,4 @@
-"""Harness：用代码工具 + OpenAI 兼容模型组装 ToolCallingAgent，运行并落盘 trace。
-
-断点续跑（MVP 的化）：
-- `run_sequence` 让**同一个 agent 实例**依次处理多个任务——首个 `reset=True`，
-  后续 `run(task, reset=False)` 在后记忆上继续，即"断点续跑"机制；每步落一个 trace。
-- 跨进程的完整 transcript 重建目前依赖 smolagents 内部 memory 序列化（非公开 API），
-  已在 README「已知要点与坑」里注明为后续迭代点。
-"""
+"""Harness adapter shared by CLI, evaluator, and the independent runtime."""
 
 from __future__ import annotations
 
@@ -18,6 +11,7 @@ from pathlib import Path
 from .config import ModelConfig
 from .llm import build_model
 from .memory import memory_instructions
+from .runtime import AgentRuntime, RuntimeStore
 from .sandbox import Sandbox
 from .tools import all_code_tools
 from .trace import RunTrace
@@ -35,7 +29,16 @@ def _now_id() -> str:
     return time.strftime("%Y%m%d-%H%M%S") + f"-{int(time.time() * 1000) % 1000:03d}"
 
 
-def make_agent(cfg: ModelConfig, workdir: str):
+def make_agent(
+    cfg: ModelConfig,
+    workdir: str,
+    *,
+    event_sink=None,
+    project_id: str = "default",
+    user_id: str = "default",
+    run_id: str | None = None,
+    cancel_event=None,
+):
     """Build a ToolCallingAgent bound to code-domain tools for `workdir`.
 
     durable 记忆经 `instructions` 注入系统提示：换进程重跑时 agent 能「记得」跨会话知识。
@@ -44,11 +47,22 @@ def make_agent(cfg: ModelConfig, workdir: str):
 
     model = build_model(cfg)
     sandbox = Sandbox.from_config(cfg)
+    sandbox.decision_sink = (
+        lambda event: event_sink({"phase": "policy", **event}) if event_sink else None
+    )
+    sandbox.cancel_event = cancel_event
     return ToolCallingAgent(
-        tools=all_code_tools(workdir, sandbox),
+        tools=all_code_tools(
+            workdir,
+            sandbox,
+            event_sink=event_sink,
+            project_id=project_id,
+            user_id=user_id,
+            run_id=run_id,
+        ),
         model=model,
         max_steps=cfg.max_steps,
-        instructions=memory_instructions(workdir),
+        instructions=memory_instructions(workdir, project_id=project_id, user_id=user_id),
     )
 
 
@@ -62,30 +76,54 @@ def run_task(
     reset: bool = True,
 ) -> RunResult:
     """对 `workdir` 跑一个任务；`reset=False` 表示在同一 agent 上续跑。落盘 trace。"""
-    if agent is None:
-        agent = make_agent(cfg, workdir)
-    answer = agent.run(task, reset=reset)
-    run_id = _now_id()
-    trace = RunTrace.from_smol_agent(
-        agent,
-        run_id=run_id,
-        workdir=os.path.realpath(workdir),
-        task=task,
-        model=cfg.model,
+    runtime = AgentRuntime(
+        RuntimeStore(cfg.state_db, out_dir),
+        trace_root=out_dir,
     )
-    trace_path = trace.dump(Path(out_dir) / run_id / "trace.json")
-    return RunResult(run_id=run_id, answer=str(answer), trace=trace, trace_path=trace_path)
+    try:
+        result = runtime.run_agent(
+            cfg,
+            task,
+            workdir,
+            agent=agent,
+            reset=reset,
+        )
+        return RunResult(
+            run_id=result.run.id,
+            answer=result.answer,
+            trace=result.trace,
+            trace_path=result.trace_path,
+        )
+    finally:
+        runtime.store.close()
 
 
 def run_sequence(cfg: ModelConfig, tasks: list[str], workdir: str, *, out_dir: str | Path = "runs"):
-    """同 agent 依次处理多个任务：演示断点续跑（后续任务 reset=False）。"""
-    agent = make_agent(cfg, workdir)
+    """同一 agent 依次处理多个任务，且每次 trace 仅包含当前调用。"""
+    runtime = AgentRuntime(RuntimeStore(cfg.state_db, out_dir), trace_root=out_dir)
+    agent = None
     results = []
-    for i, task in enumerate(tasks):
-        results.append(
-            run_task(cfg, task, workdir, out_dir=out_dir, agent=agent, reset=(i == 0))
-        )
-    return results
+    try:
+        for i, task in enumerate(tasks):
+            result = runtime.run_agent(
+                cfg,
+                task,
+                workdir,
+                agent=agent,
+                reset=(i == 0),
+            )
+            agent = result.agent
+            results.append(
+                RunResult(
+                    run_id=result.run.id,
+                    answer=result.answer,
+                    trace=result.trace,
+                    trace_path=result.trace_path,
+                )
+            )
+        return results
+    finally:
+        runtime.store.close()
 
 
 def run_selftest(workdir: str | None = None, out_dir: str | Path = "runs") -> RunResult:

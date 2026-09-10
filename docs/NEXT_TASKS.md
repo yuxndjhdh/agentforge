@@ -436,3 +436,4 @@ docker version
 | 日期 | 任务 ID | 提交/报告 | 说明 |
 | --- | --- | --- | --- |
 |  |  |  |  |
+| 2026-09-10 | T2-01~T2-05 | `6ff3300`; `docs/SECURITY_REPORT.md` | 容器诊断、digest pin、auto 回退 trace、fail-closed 和 Linux Docker CI 已实现；当前 Windows 无 Docker/Podman，storage quota 与 live 攻击验收保留阻塞。 |

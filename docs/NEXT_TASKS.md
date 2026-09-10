@@ -1,0 +1,436 @@
+# AgentForge 后续执行任务计划
+
+## 1. 文档目的
+
+本文档承接 `docs/PLAN.md`，只安排当前审计后仍未完成或未达到验收标准的工作。
+
+当前判断：
+
+- Phase 0 已基本完成，不再重复开发。
+- Phase 1、Phase 3、Phase 5 已有代码骨架，但需要补齐真实语义和集成验证。
+- Phase 2、Phase 4 缺少真实运行证据，是当前最高优先级。
+- Phase 6 已有工程化文件，但尚未形成可发布、可复现的正式版本。
+
+执行原则：
+
+1. 先修复运行时语义，再做容器安全验证。
+2. Benchmark 必须使用真实执行结果，不用手工填写指标。
+3. 功能只有在代码、测试、文档和产物同时存在时才算完成。
+4. 每完成一个任务就更新本文档复选框，并记录对应提交或报告路径。
+5. 暂不扩展多 Agent、复杂前端和更多模型供应商。
+
+## 2. 完成状态定义
+
+- `[ ]`：尚未开始。
+- `[~]`：正在进行或只完成了部分实现。
+- `[x]`：代码、测试和验收证据均已完成。
+- `[!]`：被外部环境或依赖阻塞，必须写明原因。
+
+全局 Definition of Done：
+
+- 实现进入正式模块，不以临时脚本代替。
+- 有覆盖成功、失败和边界条件的自动化测试。
+- `pytest`、`ruff`、`mypy`、`compileall` 全部通过。
+- 用户可见行为同步更新 README 或 docs。
+- 需要实验或安全验证的任务必须产出可追溯报告。
+- 相关修改已经提交到 Git，工作区没有遗漏的交付文件。
+
+## 3. 执行顺序
+
+```text
+T0 基线固化
+  -> T1 Runtime 真实恢复与幂等
+  -> T2 容器沙箱与攻击验证
+  -> T3 记忆隔离与上下文验证
+  -> T4 Benchmark 质量与真实实验
+  -> T5 API、持久化与可观测性
+  -> T6 发布工程化与简历材料
+```
+
+T1、T2 是 T4 真实实验的前置条件。T4 的报告是 T6 发布和简历描述的前置条件。
+
+---
+
+## 4. T0：固化当前开发基线
+
+目标：把当前大量未提交修改整理成可追踪基线，避免后续工作建立在不可恢复的工作区上。
+
+### T0-01 审核并提交现有 0.2.0 代码
+
+- [ ] 逐文件审核当前修改和新增文件，确认没有生成物、密钥或个人路径进入提交。
+- [ ] 删除或归档根目录与 `docs/` 中重复的计划/架构文档，只保留唯一来源。
+- [ ] 确认 `.agentforge/`、`runs/`、`.coverage`、缓存目录均被忽略。
+- [ ] 将现有改动按“runtime/sandbox”“benchmark/api”“docs/engineering”拆成可审查提交。
+- [ ] 提交后确认 `git status --short` 为空。
+
+验收命令：
+
+```powershell
+git status --short
+git log --oneline -5
+```
+
+完成证据：提交哈希记录在本节下方。
+
+---
+
+## 5. T1：完成可恢复 Runtime
+
+目标：让 checkpoint、resume、幂等和取消具备真实执行语义，而不仅是数据结构和接口。
+
+### T1-01 恢复完整 checkpoint state
+
+- [ ] `RuntimeContext` 在 resume 时接收最新完整 checkpoint state。
+- [ ] executor 可以读取 cursor、已完成步骤、业务状态和恢复元数据。
+- [ ] checkpoint 增加 schema version，并对不兼容版本给出明确错误。
+- [ ] 区分“事件序号”和“checkpoint 序号”，避免相互覆盖或误读。
+- [ ] 不完整或损坏的最后一条 checkpoint 会回退到上一条完整记录。
+
+验收场景：
+
+1. 第一次执行完成步骤 1、2 后模拟进程崩溃。
+2. 创建新的 `RuntimeStore` 和 `AgentRuntime` 实例。
+3. 使用同一个 run ID 恢复。
+4. 从步骤 3 继续，不重复步骤 1、2。
+
+### T1-02 实现工具调用幂等
+
+- [ ] 在工具执行前根据稳定 idempotency key 查询历史状态。
+- [ ] 已成功完成的工具调用直接返回保存的 observation。
+- [ ] 失败或未完成调用按显式策略决定重试或拒绝。
+- [ ] idempotency key 不依赖新的 attempt ID，否则恢复后无法命中旧调用。
+- [ ] 写文件等副作用工具增加重复执行回归测试。
+
+验收标准：同一 checkpoint 恢复两次，已完成的写文件和命令调用都只发生一次。
+
+### T1-03 强化取消与总超时
+
+- [ ] 取消普通 Python executor 时不依赖其主动轮询才能结束运行。
+- [ ] 取消 Agent 时同时终止正在运行的命令子进程树。
+- [ ] 总运行超时覆盖 LLM 请求、工具执行和 verify 阶段。
+- [ ] timeout 与 cancel 使用不同最终状态和错误类型。
+- [ ] 增加阻塞 executor、阻塞命令和慢 LLM 三类测试。
+
+### T1-04 启动恢复与僵尸运行处理
+
+- [ ] 服务启动时扫描 `running/verifying` 状态的遗留 run。
+- [ ] 根据 checkpoint 和恢复策略转为 resumable、failed 或重新入队。
+- [ ] 成功 run 重复提交保持幂等。
+- [ ] 恢复操作写入新的 attempt，并保留旧 attempt 历史。
+
+### T1-05 Runtime 集成测试
+
+- [ ] 新增真正关闭并重建 SQLite 连接的恢复测试。
+- [ ] 新增部分 JSONL 尾行损坏测试。
+- [ ] 新增重复 tool call 副作用测试。
+- [ ] 新增非协作 executor 取消测试。
+- [ ] 新增 run/attempt/step/verification 关联完整性测试。
+
+T1 完成门槛：
+
+- [ ] M2 的四条验收标准全部通过。
+- [ ] Runtime 核心模块覆盖率不低于 85%。
+- [ ] 生成一个真实中断后恢复的 trace 示例。
+
+---
+
+## 6. T2：完成容器沙箱和安全验收
+
+目标：证明 Agent 执行边界确实受到容器与资源限制，而不是只验证命令字符串。
+
+### T2-01 准备可重复的容器测试环境
+
+- [ ] 在本机或 Linux CI 中安装并确认 Docker/Podman 可用。
+- [ ] 固定沙箱执行镜像的名称和 digest。
+- [ ] 增加容器 runtime 可用性诊断命令。
+- [ ] 显式 `docker/podman` 模式在 runtime 不可用时保持 fail-closed。
+- [ ] 明确 `auto` 回退到 local 时的告警和 trace 标记。
+
+### T2-02 容器集成测试
+
+- [ ] 验证容器内 UID 非 root。
+- [ ] 验证 root filesystem 只读。
+- [ ] 验证只有 `/workspace` 可写。
+- [ ] 验证网络默认关闭。
+- [ ] 验证 CPU、内存和 PID 限制生效。
+- [ ] 验证 timeout、cancel 和输出上限能回收完整进程树。
+- [ ] 验证宿主环境变量和 Docker/Kubernetes 配置不会进入容器。
+
+### T2-03 攻击型测试集
+
+- [ ] `../` 和绝对路径逃逸。
+- [ ] 文件与目录符号链接逃逸。
+- [ ] 硬链接覆盖外部文件。
+- [ ] PowerShell、cmd、Python 子进程间接执行。
+- [ ] shell control characters 和参数解析绕过。
+- [ ] 网络访问、DNS 和回连尝试。
+- [ ] 读取宿主用户目录、Docker socket 和敏感环境变量。
+- [ ] fork bomb、无限循环、磁盘填充和超大输出。
+
+### T2-04 磁盘限制兼容策略
+
+- [ ] 验证当前容器存储驱动是否支持 `--storage-opt=size=`。
+- [ ] 不支持时使用受限临时卷或外部配额方案。
+- [ ] 禁止在无法实施磁盘限制时静默宣称已经限制。
+
+### T2-05 安全报告
+
+- [ ] 生成 `docs/SECURITY_REPORT.md`。
+- [ ] 记录测试环境、镜像 digest、攻击用例、结果和剩余风险。
+- [ ] 报告明确 local backend 不是安全边界。
+
+T2 完成门槛：
+
+- [ ] 容器测试在 Linux CI 中自动运行且全部通过。
+- [ ] Windows 平台跳过的符号链接测试在 CI 中得到实际覆盖。
+- [ ] `container_sandbox.py` 覆盖率不低于 80%。
+- [ ] M3 所有安全验收项在报告中有证据。
+
+---
+
+## 7. T3：补齐记忆隔离和上下文验证
+
+目标：让分层记忆具备明确的信任边界、作用域和可验证行为。
+
+### T3-01 完成作用域模型
+
+- [ ] 明确 durable、daily 和 run-local 三类数据的生命周期。
+- [ ] project、user、run 三个维度真正参与存储或查询隔离。
+- [ ] 当前 `run_id` 不能只作为 metadata 保存。
+- [ ] 禁止一个 scope 读取或覆盖另一个 scope 的记忆。
+- [ ] 增加 scope 迁移和旧格式兼容测试。
+
+### T3-02 提示注入防护验证
+
+- [ ] 为 durable memory 编写恶意指令样本。
+- [ ] 验证 `instruction` 类型不会自动注入。
+- [ ] 验证标签、换行、伪 system prompt 和工具调用文本均保持数据语义。
+- [ ] 在 Agent 集成测试中验证安全策略不会被恶意记忆覆盖。
+- [ ] 文档中避免使用“绝对安全”，明确模型层防护的局限。
+
+### T3-03 记忆功能测试
+
+- [ ] 覆盖 save、overwrite、delete、export、audit、version。
+- [ ] 覆盖相关性排序和更新时间排序。
+- [ ] 覆盖并发写入与原子替换。
+- [ ] 覆盖损坏 JSON 和损坏 audit 尾行恢复。
+
+### T3-04 Token 预算接口
+
+- [ ] 接入至少一个真实 provider tokenizer 或明确的 tokenizer adapter。
+- [ ] 字符预算作为 fallback，并在 trace 中标记估算方式。
+- [ ] 验证字符预算和 token 预算同时存在时的优先级。
+- [ ] 增加超预算但不可安全压缩时的明确状态。
+
+T3 完成门槛：
+
+- [ ] memory 新增能力都有自动测试，而不是只由实现代码覆盖。
+- [ ] 恶意 durable 样例不能改变工具权限或系统策略。
+- [ ] context/memory 报告能说明预算来源和信任边界。
+
+---
+
+## 8. T4：完成真实 Benchmark
+
+目标：把“23 个任务定义”变成可复现、可比较、能写进简历的实验结果。
+
+### T4-01 修正 Benchmark 接线
+
+- [ ] API benchmark 默认使用 `BENCHMARK_TASKS`，不是单任务 `BUILTIN_TASKS`。
+- [ ] API 和 CLI 使用同一任务选择逻辑。
+- [ ] 请求不存在的任务名时返回明确错误。
+- [ ] 增加 benchmark runner 和 API benchmark 测试。
+
+### T4-02 提升任务质量
+
+- [ ] 审核现有 23 个任务，移除只靠简单字符串替换即可通过的脆弱验收。
+- [ ] command check 使用专用测试文件验证行为，而不只验证输出中含某个数字。
+- [ ] 至少加入 10 个多文件真实任务。
+- [ ] 覆盖 bug 修复、补测试、API 修改、重构、配置迁移、CLI 和安全修复。
+- [ ] 为任务记录来源、难度、标签、资源限制和验收逻辑。
+- [ ] seed、gold 和验收代码进入版本控制。
+
+### T4-03 Benchmark runner 回归测试
+
+- [ ] 使用 fake solver 测试报告生成，不消耗真实模型额度。
+- [ ] 测试 pass@1、pass@3、pass@5 汇总。
+- [ ] 测试 p50/p95、token、成本和失败类型。
+- [ ] 测试报告原子写入和损坏恢复。
+- [ ] 测试固定任务顺序、随机种子和配置快照。
+
+### T4-04 执行真实实验矩阵
+
+至少执行以下四组实验，每组每任务至少 5 次，以便计算 pass@1/3/5：
+
+| 实验 | 上下文压缩 | Verify retry | 目的 |
+| --- | --- | --- | --- |
+| A | 关闭 | 关闭 | 基线 |
+| B | 开启 | 关闭 | 测量压缩影响 |
+| C | 关闭 | 开启 | 测量反馈重试影响 |
+| D | 开启 | 开启 | 完整系统 |
+
+- [ ] 固定模型版本、temperature、任务版本和 AgentForge commit。
+- [ ] 保存完整配置快照和失败 trace。
+- [ ] 记录输入/输出 token、成本、耗时和步骤数。
+- [ ] 不把失败运行删除或只保留汇总。
+
+### T4-05 生成 Benchmark 报告
+
+- [ ] 生成 `runs/benchmarks/<version>/report.json`。
+- [ ] 生成 `docs/BENCHMARK_REPORT.md`。
+- [ ] 报告包含 pass@1/3/5、p50/p95、成本、失败分布和消融对比。
+- [ ] 对统计结果进行人工抽样，至少复查每类失败 3 个 trace。
+- [ ] 只在报告生成后确定简历中的量化数字。
+
+T4 完成门槛：
+
+- [ ] 一条命令能从固定任务集重建报告。
+- [ ] 至少 20 个有效任务通过任务质量审核。
+- [ ] 四组真实实验全部存在可追踪产物。
+- [ ] `benchmark.py` 具备自动测试覆盖。
+
+---
+
+## 9. T5：完成服务持久化与可观测性
+
+目标：API 重启后状态仍可查询和恢复，trace 与 metrics 能反映真实执行过程。
+
+### T5-01 持久化 Benchmark job
+
+- [ ] 将 benchmark 状态从进程内字典迁移到 SQLite。
+- [ ] 保存 job、配置、任务列表、状态、报告路径和错误。
+- [ ] 服务重启后仍能查询已完成和失败的 benchmark。
+- [ ] 启动时处理遗留 `running` benchmark。
+
+### T5-02 增加恢复接口
+
+- [ ] 增加 `POST /runs/{id}/resume`。
+- [ ] 只允许可恢复状态调用 resume。
+- [ ] 返回新的 attempt 信息和原 run ID。
+- [ ] 增加并发 resume 冲突测试。
+
+### T5-03 接入真实 OpenTelemetry
+
+- [ ] 在 run、LLM request、tool call、verification 上创建 span。
+- [ ] 配置可选 OTLP exporter。
+- [ ] trace ID 写入 runtime event 和 API 响应。
+- [ ] 增加 exporter 不可用时的降级行为。
+- [ ] 删除只定义但从未调用的观测接口。
+
+### T5-04 完善 Metrics
+
+- [ ] 增加 run 状态、工具调用、LLM 重试、sandbox 拒绝和 verification 指标。
+- [ ] 增加延迟 histogram，而不只记录 count/sum。
+- [ ] 控制 label cardinality，禁止 run ID 作为 Prometheus label。
+- [ ] 为 `/metrics` 输出增加格式测试。
+
+### T5-05 API 端到端测试
+
+- [ ] 使用 fake LLM/provider 完成真实后台 run，不 mock 掉 `_run`。
+- [ ] 覆盖提交、轮询、trace、取消、失败和恢复。
+- [ ] 覆盖服务关闭并重建后的状态查询。
+- [ ] 覆盖 benchmark 创建、完成、失败和重启查询。
+- [ ] 验证 API 和 CLI 最终使用同一 Runtime 行为。
+
+T5 完成门槛：
+
+- [ ] 服务重启后 run 与 benchmark 都不会丢失。
+- [ ] API 可以恢复中断任务。
+- [ ] OpenTelemetry span 和 Prometheus 指标均来自真实执行路径。
+- [ ] API E2E 测试不绕过 worker。
+
+---
+
+## 10. T6：正式工程化交付
+
+目标：将当前开发工作区变成可安装、可复现、可发布的版本。
+
+### T6-01 依赖与构建
+
+- [ ] 使用 `uv lock`、`pip-tools` 或等价工具生成完整传递依赖锁。
+- [ ] 在 Python 3.11、3.12、3.13 上验证锁文件和安装。
+- [ ] 构建 wheel 和 sdist，并在全新虚拟环境安装验证。
+- [ ] 验证 console script `agentforge` 可用。
+- [ ] 固定沙箱镜像 digest 和构建参数。
+
+### T6-02 CI
+
+- [ ] 单元测试、ruff、mypy、coverage、compileall 在 GitHub Actions 通过。
+- [ ] 增加 Linux Docker 沙箱集成 job。
+- [ ] 增加 API E2E job。
+- [ ] 增加构建 wheel/sdist 的 packaging job。
+- [ ] 设置最低覆盖率门槛，初始建议 80%。
+- [ ] README 中展示真实 CI 状态。
+
+### T6-03 文档与演示
+
+- [ ] 更新 README 快速开始、架构、安全边界和 benchmark 数据。
+- [ ] 更新 `ARCHITECTURE.md`、`THREAT_MODEL.md`、`RUNBOOK.md`。
+- [ ] 添加 `docs/BENCHMARK_REPORT.md` 和 `docs/SECURITY_REPORT.md`。
+- [ ] 添加 3～5 分钟可重复演示脚本。
+- [ ] 演示输出包含最终 diff、checks、步骤、token、耗时和 trace 路径。
+
+### T6-04 发布
+
+- [ ] 将版本提升到与实际能力一致的版本号。
+- [ ] 更新 CHANGELOG，禁止记录未验证的结果。
+- [ ] 创建 release commit 和 Git tag。
+- [ ] 从干净 clone 按 RUNBOOK 完整复现一次。
+- [ ] 保存最终 release 对应的 benchmark 和安全报告。
+
+T6 完成门槛：
+
+- [ ] M1～M5 均已通过各自验收门槛。
+- [ ] Git 工作区干净，CI 全绿。
+- [ ] Docker、CLI、API 和 benchmark 均可按文档复现。
+- [ ] Release tag、报告和演示材料完整。
+
+---
+
+## 11. 每次提交前的验证清单
+
+```powershell
+.venv\Scripts\python -m pytest -q
+.venv\Scripts\ruff check agentforge tests
+.venv\Scripts\mypy agentforge
+.venv\Scripts\python -m compileall -q agentforge
+git diff --check
+git status --short
+```
+
+涉及容器时追加：
+
+```powershell
+docker version
+.venv\Scripts\python -m pytest tests/integration/test_container_sandbox.py -q
+```
+
+涉及 API 时追加：
+
+```powershell
+.venv\Scripts\python -m pytest tests/e2e/test_api_runtime.py -q
+```
+
+涉及 Benchmark 时追加：
+
+```powershell
+.venv\Scripts\python -m agentforge benchmark --trials 5 --k 5 --out runs/benchmarks/<version>
+```
+
+## 12. 当前下一步
+
+严格按以下顺序开始：
+
+1. T0-01：审核并固化当前 0.2.0 工作区。
+2. T1-01：让 checkpoint state 真正进入恢复执行上下文。
+3. T1-02：实现跨 attempt 的工具调用幂等。
+4. T1-05：用关闭并重建 RuntimeStore 的测试证明恢复有效。
+5. T2-01：准备 Linux Docker 测试环境。
+
+在这五项完成前，不开始复杂 UI、多 Agent 或额外模型接入。
+
+## 13. 完成记录
+
+| 日期 | 任务 ID | 提交/报告 | 说明 |
+| --- | --- | --- | --- |
+|  |  |  |  |

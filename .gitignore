@@ -6,3 +6,5 @@ runs/
 *.jsonl
 .pytest_cache/
 .agentforge/
+.coverage
+.coverage.*

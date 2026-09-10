@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentforge"
+version = "0.2.0"
+description = "Reliable code-agent execution, evaluation, tracing, and sandbox runtime"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "smolagents[openai]==1.26.0",
+  "python-dotenv==1.2.3",
+]
+
+[project.optional-dependencies]
+api = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.34,<1",
+]
+observability = [
+  "opentelemetry-api>=1.30,<2",
+  "opentelemetry-sdk>=1.30,<2",
+]
+dev = [
+  "agentforge[api,observability]",
+  "pytest==9.1.1",
+  "pytest-cov>=6,<7",
+  "ruff>=0.11,<1",
+  "mypy>=1.15,<2",
+  "pre-commit>=4,<5",
+]
+
+[project.scripts]
+agentforge = "agentforge.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["agentforge*"]
+
+[tool.setuptools.package-data]
+agentforge = ["api/static/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 110
+exclude = ["runs", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+check_untyped_defs = true
+disallow_untyped_defs = false
+no_implicit_optional = true
+ignore_missing_imports = true
+warn_unused_ignores = true
+exclude = "(^|/)(runs|tests)/"

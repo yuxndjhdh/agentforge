@@ -1,0 +1,151 @@
+{
+  "invalid_trials": 0,
+  "limitations": [
+    "Smoke and pilot results are not the formal 410-trial matrix.",
+    "F05 demonstrates the local fail-closed boundary; it cannot prove exactly-once behavior for an arbitrary external service.",
+    "Docker unavailability is represented by an explicit deterministic fail-closed probe; no daemon is disrupted by this runner."
+  ],
+  "metrics": {
+    "cancellation_reclaim_rate": {
+      "denominator": 5,
+      "numerator": 5,
+      "rate": 1.0
+    },
+    "duplicate_side_effect_rate": {
+      "denominator": 10,
+      "numerator": 0,
+      "rate": 0.0
+    },
+    "fail_closed_correctness_rate": {
+      "denominator": 15,
+      "numerator": 15,
+      "rate": 1.0
+    },
+    "false_success_rate": {
+      "denominator": 70,
+      "numerator": 0,
+      "rate": 0.0
+    },
+    "orphan_run_rate": {
+      "denominator": 70,
+      "numerator": 0,
+      "rate": 0.0
+    },
+    "resume_success_rate": {
+      "denominator": 45,
+      "numerator": 45,
+      "rate": 1.0
+    },
+    "state_consistency_rate": {
+      "denominator": 70,
+      "numerator": 70,
+      "rate": 1.0
+    },
+    "timeout_reclaim_rate": {
+      "denominator": 5,
+      "numerator": 5,
+      "rate": 1.0
+    },
+    "trace_completeness": {
+      "denominator": 70,
+      "numerator": 70,
+      "rate": 1.0
+    }
+  },
+  "multi_platform_evidence": false,
+  "platforms": [
+    "Windows-11-10.0.26200-SP0"
+  ],
+  "recovery_latency_seconds": {
+    "p50": 0.5113616000016918,
+    "p95": 0.6825642999901902
+  },
+  "scenarios": {
+    "F01_llm_before_request": {
+      "expected": "recover",
+      "observed": 5,
+      "trials": 5
+    },
+    "F02_llm_after_response": {
+      "expected": "recover",
+      "observed": 5,
+      "trials": 5
+    },
+    "F03_tool_before_start": {
+      "expected": "recover",
+      "observed": 5,
+      "trials": 5
+    },
+    "F04_tool_completed_persisted": {
+      "expected": "recover",
+      "observed": 5,
+      "trials": 5
+    },
+    "F05_effect_before_completion": {
+      "expected": "fail-closed",
+      "observed": 5,
+      "trials": 5
+    },
+    "F06_checkpoint_completed": {
+      "expected": "recover",
+      "observed": 5,
+      "trials": 5
+    },
+    "F07_jsonl_partial_tail": {
+      "expected": "recover",
+      "observed": 5,
+      "trials": 5
+    },
+    "F08_checkpoint_corruption": {
+      "expected": "recover",
+      "observed": 5,
+      "trials": 5
+    },
+    "F09_checkpoint_schema": {
+      "expected": "fail-closed",
+      "observed": 5,
+      "trials": 5
+    },
+    "F10_sqlite_temporarily_unwritable": {
+      "expected": "recover",
+      "observed": 5,
+      "trials": 5
+    },
+    "F11_api_process_restart": {
+      "expected": "recover",
+      "observed": 5,
+      "trials": 5
+    },
+    "F12_docker_unavailable": {
+      "expected": "fail-closed",
+      "observed": 5,
+      "trials": 5
+    },
+    "F13_run_timeout": {
+      "expected": "timeout",
+      "observed": 5,
+      "trials": 5
+    },
+    "F14_user_cancel": {
+      "expected": "cancelled",
+      "observed": 5,
+      "trials": 5
+    }
+  },
+  "schema_version": 1,
+  "scope": "pilot",
+  "suite_version": "fault-v1",
+  "thresholds": {
+    "cancellation_reclaim_rate": 0.99,
+    "duplicate_side_effect_rate": 0.0,
+    "fail_closed_correctness_rate": 1.0,
+    "false_success_rate": 0.0,
+    "orphan_run_rate": 0.01,
+    "resume_success_rate": 0.95,
+    "state_consistency_rate": 0.99,
+    "timeout_reclaim_rate": 0.99,
+    "trace_completeness": 0.99
+  },
+  "trials": 70,
+  "valid_trials": 70
+}

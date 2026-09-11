@@ -11,8 +11,11 @@ python -m agentforge selftest
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
+from dataclasses import replace
+from pathlib import Path
 
 from . import harness
 from .config import load_config
@@ -73,6 +76,8 @@ def cmd_eval(args) -> int:
 
 
 def cmd_benchmark(args) -> int:
+    if args.dataset:
+        return cmd_external_benchmark(args)
     from .benchmark import BenchmarkOptions, run_benchmark
     from .code_tasks import select_benchmark_tasks
 
@@ -113,6 +118,70 @@ def cmd_benchmark(args) -> int:
     print(f"pass@1={summary['pass@1']:.3f}  pass@{args.k}={summary['pass@k']:.3f}")
     print(f"p50={summary['p50_latency_seconds']:.3f}s  p95={summary['p95_latency_seconds']:.3f}s")
     print(f"report: {report['report_path']}")
+    return 0
+
+
+def cmd_external_benchmark(args) -> int:
+    from .external_tasks import (
+        ExternalDataset,
+        RepositoryMaterializer,
+        run_external_episode,
+        summarize_external_episodes,
+    )
+
+    cfg = load_config()
+    if args.model:
+        cfg = replace(cfg, model=args.model)
+    dataset = ExternalDataset.load(args.dataset, split=args.split)
+    names = {name.strip() for name in args.tasks.split(",") if name.strip()} if args.tasks else None
+    tasks = [task for task in dataset.tasks if names is None or task.id in names]
+    if not tasks:
+        raise ValueError("no external tasks matched --tasks")
+    verify_enabled = bool(args.verify_retry)
+    max_attempts = args.verify_attempts if args.verify_attempts is not None else (3 if verify_enabled else 1)
+    materializer = RepositoryMaterializer()
+    episodes = []
+    for trial in range(args.trials):
+        for task in tasks:
+            episode = run_external_episode(
+                cfg,
+                task,
+                materializer=materializer,
+                out_dir=Path(args.out) / "traces",
+                verify_enabled=verify_enabled,
+                max_attempts=max_attempts,
+            )
+            episode["trial"] = trial
+            episode["seed"] = args.seed + trial
+            episodes.append(episode)
+    summary = summarize_external_episodes(episodes, seed=args.seed)
+    report = {
+        "schema_version": 1,
+        "benchmark_version": "external-v1",
+        "scope": "pipeline_smoke" if any(task.is_local_fixture for task in tasks) else "external_candidate",
+        "dataset_version": dataset.version,
+        "dataset_sha256": dataset.dataset_sha256,
+        "manifest_sha256": dataset.manifest_sha256,
+        "split": args.split,
+        "model": cfg.model,
+        "config": {"model": cfg.model, "temperature": cfg.temperature, "max_steps": cfg.max_steps},
+        "task_order": [task.id for task in tasks],
+        "trials": args.trials,
+        "seed": args.seed,
+        "summary": summary,
+        "episodes": episodes,
+        "limitations": summary["limitations"],
+    }
+    target = Path(args.out)
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (target / "episodes.json").write_text(json.dumps(episodes, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(
+        f"external benchmark: scope={report['scope']} dataset={dataset.version} "
+        f"split={args.split} tasks={len(tasks)} episodes={len(episodes)}"
+    )
+    print(f"final_success={summary['final_success']['numerator']}/{summary['final_success']['denominator']}")
+    print(f"report: {target / 'report.json'}")
     return 0
 
 
@@ -218,6 +287,9 @@ def main(argv=None) -> int:
     p_bench.add_argument("--tasks", default="", help="逗号分隔任务名，缺省为 benchmark 全部任务")
     p_bench.add_argument("--out", default="runs/benchmarks/latest", help="报告输出目录")
     p_bench.add_argument("--seed", type=int, default=0, help="固定实验 seed（任务本身为确定性 seed）")
+    p_bench.add_argument("--dataset", default="", help="声明式 external dataset manifest/directory")
+    p_bench.add_argument("--split", choices=("validation", "holdout"), default="validation")
+    p_bench.add_argument("--model", default="", help="external benchmark 使用的显式模型名")
     compression_group = p_bench.add_mutually_exclusive_group()
     compression_group.add_argument(
         "--context-compression",

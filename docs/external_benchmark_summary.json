@@ -1,0 +1,35 @@
+{
+  "episodes": 3,
+  "final_success": {
+    "denominator": 3,
+    "numerator": 3,
+    "rate": 1.0
+  },
+  "first_success": {
+    "denominator": 3,
+    "numerator": 3,
+    "rate": 1.0
+  },
+  "limitations": [
+    "Local file:// repositories are pipeline smoke only.",
+    "A formal external result requires frozen holdout data, two models, and the planned trial count.",
+    "Bootstrap resamples tasks rather than treating trials as independent tasks."
+  ],
+  "schema_version": 1,
+  "summary_scope": "descriptive_only",
+  "task_level_final_rate": {
+    "bootstrap_95_ci": [
+      1.0,
+      1.0
+    ],
+    "mean": 1.0
+  },
+  "task_level_first_rate": {
+    "bootstrap_95_ci": [
+      1.0,
+      1.0
+    ],
+    "mean": 1.0
+  },
+  "tasks": 3
+}

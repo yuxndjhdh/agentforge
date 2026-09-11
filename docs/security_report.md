@@ -46,6 +46,25 @@ remains unverified and executions with a configured disk limit fail closed.
 The default image reference is digest-pinned; user-supplied unpinned images
 are rejected by the container executor.
 
+## Verification On 2026-09-11
+
+The current workspace repeated the live checks with Docker Desktop's Linux
+engine:
+
+```text
+Docker Server: 29.7.2
+Storage driver: overlayfs
+Image: python:3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285
+pytest -m integration tests/integration/test_container_sandbox.py -q: 3 passed
+Disk quota status: disabled
+```
+
+The repeated integration result confirms the existing non-root, workspace,
+network/secret-environment, timeout, and output-reclamation cases. It does
+not add Linux-runner evidence for CPU/PID enforcement, the full attack matrix,
+external-path probes, or overlayfs quota enforcement. Those items remain
+open and this report must not be used as complete R1 acceptance evidence.
+
 Run the following on Linux CI or a host with a configured daemon:
 
 ```powershell

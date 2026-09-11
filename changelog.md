@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Add reproducible A/B/C/D benchmark reporting and failure audit records;
+  supplier billing rates remain `unavailable`.
+- Normalize delivery document names and the package README path for
+  case-sensitive clean clones.
+- Validation: 112 tests passed and 1 platform-limited test was skipped;
+  Docker live integration passed 3 tests. Complete quota/attack-matrix and
+  remote CI evidence remain pending.
+
 ## 0.3.0 - 2026-09-10
 
 - Persist benchmark jobs and run metadata across API service restarts.

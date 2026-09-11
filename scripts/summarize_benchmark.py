@@ -24,6 +24,22 @@ def _number(value: Any, digits: int = 3) -> str:
     return str(value)
 
 
+def _cost_rates_available(report: dict[str, Any]) -> bool:
+    config = report.get("config") or {}
+    try:
+        input_rate = float(config.get("input_cost_per_million", 0.0))
+        output_rate = float(config.get("output_cost_per_million", 0.0))
+    except (TypeError, ValueError):
+        return False
+    return input_rate > 0 and output_rate > 0
+
+
+def _cost_value(report: dict[str, Any], field: str) -> str:
+    if not _cost_rates_available(report):
+        return "unavailable"
+    return _number((report.get("summary") or {}).get(field), 6)
+
+
 def _validate_report(path: Path, expected_variant: str) -> dict[str, Any]:
     report = load_report(path)
     if report.get("experiment_id") != expected_variant:
@@ -68,7 +84,7 @@ def build_report(paths: dict[str, str | Path]) -> str:
                 steps=_number(summary.get("avg_steps")),
                 input_tokens=_number(summary.get("avg_input_tokens")),
                 output_tokens=_number(summary.get("avg_output_tokens")),
-                cost=_number(summary.get("estimated_cost"), 6),
+                cost=_cost_value(reports[variant], "estimated_cost"),
             )
         )
 
@@ -78,6 +94,11 @@ def build_report(paths: dict[str, str | Path]) -> str:
         if not isinstance(base, (int, float)) or not isinstance(value, (int, float)):
             return "unavailable"
         return _number(value - base)
+
+    def cost_delta(variant: str) -> str:
+        if not _cost_rates_available(reports["A"]) or not _cost_rates_available(reports[variant]):
+            return "unavailable"
+        return delta(variant, "estimated_cost")
 
     model = first.get("model", "unknown")
     git = first.get("git") or {}
@@ -125,9 +146,9 @@ def build_report(paths: dict[str, str | Path]) -> str:
                     variant=variant,
                     success=delta(variant, "final_success_rate"),
                     tokens=delta(variant, "avg_input_tokens"),
-                    cost=delta(variant, "estimated_cost"),
+                    cost=cost_delta(variant),
                     compression=_number((reports[variant].get("summary") or {}).get("compression_trigger_rate")),
-                    verify_cost=_number((reports[variant].get("summary") or {}).get("verify_incremental_cost"), 6),
+                    verify_cost=_cost_value(reports[variant], "verify_incremental_cost"),
                 )
                 for variant in ("B", "C", "D")
             ],
@@ -137,6 +158,14 @@ def build_report(paths: dict[str, str | Path]) -> str:
             "The comparison is descriptive for five trials per task; it is not a significance test. "
             "A compression or Verify conclusion requires the corresponding trigger/attempt data to be non-zero. "
             "Every metric above is sourced from the validated episode records in the four input reports.",
+            "",
+            (
+                "The four reports do not contain positive input and output cost rates, so cost fields are "
+                "`unavailable`; token totals remain available, but no billing conclusion is valid."
+                if not all(_cost_rates_available(report) for report in reports.values())
+                else "Estimated cost uses the configured input/output rates per million tokens."
+            ),
+            "The Docker performance runs do not constitute complete container-security evidence when disk quota enforcement is disabled or unverified.",
             "",
         ]
     )

@@ -55,15 +55,35 @@ engine:
 Docker Server: 29.7.2
 Storage driver: overlayfs
 Image: python:3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285
-pytest -m integration tests/integration/test_container_sandbox.py -q: 3 passed
+pytest -m integration tests/integration/test_container_sandbox.py -q: 5 passed
 Disk quota status: disabled
 ```
 
 The repeated integration result confirms the existing non-root, workspace,
-network/secret-environment, timeout, and output-reclamation cases. It does
-not add Linux-runner evidence for CPU/PID enforcement, the full attack matrix,
-external-path probes, or overlayfs quota enforcement. Those items remain
-open and this report must not be used as complete R1 acceptance evidence.
+network/secret-environment, timeout, output-reclamation, cgroup-limit, and
+external-path write cases. It does not add Linux-runner evidence for the full
+attack matrix or overlayfs quota enforcement. Those items remain open and this
+report must not be used as complete R1 acceptance evidence.
+
+The current Docker Desktop host also passed the following live probes through
+the container executor:
+
+```text
+CPU cgroup:        cpu.max=100000 100000
+Memory cgroup:     memory.max=536870912
+PID cgroup:        pids.max=128
+Container UID:     1000
+/tmp write:        blocked
+/etc write:        blocked
+/agentforge write: blocked
+/workspace write:  allowed
+```
+
+These values match the executor's configured 1 CPU, 512 MiB, and 128 PID
+limits. The probes strengthen the evidence for this Docker Desktop daemon, but
+they do not replace a Linux-runner matrix for alternate daemons, indirect
+shell execution, fork-bomb handling, disk filling, or storage quota
+enforcement.
 
 Run the following on Linux CI or a host with a configured daemon:
 

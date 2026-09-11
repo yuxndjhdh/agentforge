@@ -65,6 +65,19 @@ def test_build_report_is_generated_from_all_variants(tmp_path):
     assert "Do not edit metrics manually" in report
 
 
+def test_build_report_marks_unconfigured_cost_unavailable(tmp_path):
+    paths = {}
+    for variant in ("A", "B", "C", "D"):
+        path = tmp_path / f"{variant}.json"
+        path.write_text(json.dumps(_report(variant)), encoding="utf-8")
+        paths[variant] = path
+
+    report = build_report(paths)
+
+    assert "Cost |" in report
+    assert "unavailable" in report
+
+
 def test_build_report_rejects_wrong_variant(tmp_path):
     paths = {}
     for variant in ("A", "B", "C", "D"):

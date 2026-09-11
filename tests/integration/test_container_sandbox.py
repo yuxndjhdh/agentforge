@@ -39,6 +39,44 @@ def test_container_runs_non_root_and_only_workspace_is_writable(tmp_path):
     assert (tmp_path / "agentforge-test.txt").read_text(encoding="utf-8") == "ok"
 
 
+def test_container_applies_cpu_memory_and_pid_limits(tmp_path):
+    executor = _executor(tmp_path)
+    probe = """
+from pathlib import Path
+
+expected = {
+    '/sys/fs/cgroup/cpu.max': '100000 100000',
+    '/sys/fs/cgroup/memory.max': '536870912',
+    '/sys/fs/cgroup/pids.max': '128',
+}
+for path, value in expected.items():
+    actual = Path(path).read_text(encoding='utf-8').strip()
+    assert actual == value, f'{path}: {actual!r}'
+print('cgroup limits verified')
+"""
+    result = executor.execute(["python", "-c", probe], cwd=str(tmp_path))
+    assert result.returncode == 0, result.stderr
+    assert "cgroup limits verified" in result.stdout
+
+
+def test_container_root_filesystem_is_read_only_outside_workspace(tmp_path):
+    executor = _executor(tmp_path)
+    probe = """
+from pathlib import Path
+
+for target in ('/tmp/agentforge-probe', '/etc/agentforge-probe', '/agentforge-probe'):
+    try:
+        Path(target).write_text('must be blocked', encoding='utf-8')
+    except OSError:
+        continue
+    raise AssertionError(f'{target} is writable')
+Path('/workspace/agentforge-rootfs-probe.txt').write_text('workspace-ok', encoding='utf-8')
+"""
+    result = executor.execute(["python", "-c", probe], cwd=str(tmp_path))
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "agentforge-rootfs-probe.txt").read_text(encoding="utf-8") == "workspace-ok"
+
+
 def test_container_has_no_network_or_secret_environment(tmp_path):
     executor = _executor(tmp_path)
     result = executor.execute(

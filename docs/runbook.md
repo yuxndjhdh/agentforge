@@ -34,7 +34,7 @@ The service stores run and benchmark metadata in `AGENTFORGE_STATE_DB`, events a
 
 ## Recovery
 
-If a worker exits, inspect the run status and latest complete checkpoint in SQLite. Call `POST /runs/{id}/resume` for a failed or cancelled run; the response contains the new attempt ID while the original run ID and attempt history are retained. A successful run ID is idempotent and is never executed twice. A resume request already in progress returns HTTP 409.
+If a worker exits, inspect the run status and latest complete checkpoint in SQLite. Call `POST /runs/{id}/resume` for a failed or cancelled run; the response contains the new attempt ID and the checkpoint sequence used for recovery while the original run ID and attempt history are retained. A successful run ID is idempotent and is never executed twice. A resume request already in progress returns HTTP 409.
 
 ## Cleanup
 

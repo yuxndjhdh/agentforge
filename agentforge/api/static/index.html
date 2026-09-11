@@ -3,58 +3,393 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AgentForge Runs</title>
+  <title>AgentForge Workbench</title>
   <style>
-    :root { color-scheme: light; font-family: system-ui, sans-serif; }
-    body { margin: 0; background: #f4f5f7; color: #20242a; }
-    main { max-width: 1050px; margin: 0 auto; padding: 28px 18px 60px; }
-    h1 { font-size: 22px; margin: 0 0 22px; }
-    form, section { background: #fff; border: 1px solid #d9dde3; border-radius: 6px; padding: 18px; margin-bottom: 16px; }
-    form { display: grid; grid-template-columns: 1fr 2fr auto; gap: 10px; align-items: end; }
-    label { display: grid; gap: 5px; font-size: 12px; color: #5b6572; }
-    input { border: 1px solid #c7ccd4; border-radius: 4px; padding: 9px; font: inherit; }
-    button { border: 0; border-radius: 4px; background: #1667c7; color: white; padding: 10px 14px; cursor: pointer; }
-    button:hover { background: #0d559f; }
-    .meta { display: flex; flex-wrap: wrap; gap: 18px; font-size: 13px; }
-    .status { font-weight: 650; }
-    pre { overflow: auto; background: #171a1f; color: #e8edf4; border-radius: 4px; padding: 14px; font-size: 12px; line-height: 1.45; }
-    @media (max-width: 700px) { form { grid-template-columns: 1fr; } }
+    :root {
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --ink: #17202a;
+      --muted: #637080;
+      --line: #d8dee6;
+      --canvas: #f5f7f9;
+      --panel: #ffffff;
+      --blue: #1557a6;
+      --blue-soft: #e8f0fb;
+      --green: #16754a;
+      --green-soft: #e8f6ee;
+      --red: #b42318;
+      --red-soft: #fff0ee;
+      --amber: #986500;
+      --amber-soft: #fff7df;
+      --mono: "Cascadia Code", Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--canvas); color: var(--ink); }
+    button, input, select, textarea { font: inherit; }
+    button { cursor: pointer; }
+    .shell { max-width: 1320px; margin: 0 auto; padding: 22px 22px 56px; }
+    .topbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 20px; }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: 23px; letter-spacing: 0; }
+    h2 { font-size: 16px; }
+    h3 { font-size: 13px; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+    .version { color: var(--muted); font-size: 12px; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 18px; margin-bottom: 16px; }
+    .form-grid { display: grid; grid-template-columns: minmax(240px, 1.35fr) minmax(260px, 2fr) repeat(3, minmax(120px, .7fr)); gap: 12px; align-items: end; }
+    .form-grid .wide { grid-column: span 2; }
+    label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 650; }
+    input, select, textarea { width: 100%; border: 1px solid #c6ced8; border-radius: 4px; background: #fff; color: var(--ink); padding: 9px 10px; }
+    textarea { min-height: 66px; resize: vertical; line-height: 1.4; }
+    input:focus, select:focus, textarea:focus { outline: 2px solid #9ec2ef; outline-offset: 1px; border-color: var(--blue); }
+    .form-actions { display: flex; justify-content: flex-end; gap: 8px; align-items: center; }
+    .button { border: 1px solid var(--blue); border-radius: 4px; padding: 9px 13px; background: var(--blue); color: #fff; font-weight: 700; }
+    .button.secondary { background: #fff; color: var(--blue); }
+    .button.danger { border-color: var(--red); background: var(--red); }
+    .button:disabled { cursor: not-allowed; opacity: .48; }
+    .button[aria-disabled="true"] { cursor: not-allowed; opacity: .48; pointer-events: none; }
+    .hint { color: var(--muted); font-size: 12px; line-height: 1.45; margin-top: 10px; }
+    .warning { display: none; margin-top: 12px; padding: 9px 11px; border: 1px solid #ecd18a; border-radius: 4px; background: var(--amber-soft); color: var(--amber); font-size: 12px; }
+    .warning.visible { display: block; }
+    .runbar { display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .run-id { color: var(--muted); font: 12px var(--mono); overflow-wrap: anywhere; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .status { display: inline-flex; align-items: center; min-height: 25px; border-radius: 4px; padding: 3px 8px; font-size: 12px; font-weight: 750; text-transform: uppercase; }
+    .status.pending, .status.running, .status.verifying { color: var(--blue); background: var(--blue-soft); }
+    .status.succeeded { color: var(--green); background: var(--green-soft); }
+    .status.failed, .status.cancelled { color: var(--red); background: var(--red-soft); }
+    .empty { color: var(--muted); font-size: 13px; }
+    .grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, .85fr); gap: 16px; align-items: start; }
+    .stack > .panel:last-child { margin-bottom: 0; }
+    .panel-header { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 14px; }
+    .meta-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 14px; }
+    .meta-item { min-width: 0; }
+    .meta-label { display: block; color: var(--muted); font-size: 11px; margin-bottom: 3px; }
+    .meta-value { display: block; font-size: 13px; overflow-wrap: anywhere; }
+    .metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .metric { border-left: 3px solid #c9d3df; padding-left: 9px; min-width: 0; }
+    .metric strong { display: block; font-size: 18px; line-height: 1.2; }
+    .metric span { color: var(--muted); font-size: 11px; }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { border-bottom: 1px solid #e8ebef; text-align: left; padding: 8px 6px; vertical-align: top; }
+    th { color: var(--muted); font-size: 11px; font-weight: 750; }
+    td code { font: 11px var(--mono); overflow-wrap: anywhere; }
+    pre { overflow: auto; margin: 0; border-radius: 5px; padding: 13px; background: #17202a; color: #e9eef5; font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .diff-empty { background: #f7f8fa; color: var(--muted); border: 1px dashed #cbd3dd; }
+    .event-list { display: grid; gap: 7px; max-height: 350px; overflow: auto; }
+    .event { display: grid; grid-template-columns: 32px 170px minmax(0, 1fr); gap: 8px; padding: 7px 0; border-bottom: 1px solid #edf0f3; font-size: 12px; }
+    .event span { color: var(--muted); }
+    .event code { overflow-wrap: anywhere; font: 11px var(--mono); }
+    .security-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; margin: 0; padding: 0; list-style: none; font-size: 12px; }
+    .security-list span { color: var(--muted); }
+    @media (max-width: 1050px) {
+      .form-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .form-grid .wide { grid-column: span 2; }
+      .grid { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 650px) {
+      .shell { padding: 16px 12px 40px; }
+      .topbar { align-items: flex-start; flex-direction: column; }
+      .panel { padding: 14px; }
+      .form-grid, .meta-grid, .metrics, .security-list { grid-template-columns: 1fr; }
+      .form-grid .wide { grid-column: auto; }
+      .form-actions { justify-content: stretch; }
+      .form-actions .button { flex: 1; }
+      .event { grid-template-columns: 25px 1fr; }
+      .event code { grid-column: 2; }
+    }
   </style>
 </head>
 <body>
-<main>
-  <h1>AgentForge Runs</h1>
-  <form id="run-form">
-    <label>Repository<input id="repo" required placeholder="C:\\path\\to\\repo"></label>
-    <label>Task<input id="task" required placeholder="Describe the code change"></label>
-    <button type="submit">Start run</button>
-  </form>
-  <section>
-    <div class="meta"><span>Run ID: <strong id="run-id">-</strong></span><span>Status: <strong id="status">-</strong></span></div>
-    <pre id="trace">Submit a run to inspect its trace.</pre>
+<main class="shell">
+  <header class="topbar">
+    <div>
+      <h1>AgentForge Workbench</h1>
+      <span class="version" id="version">Loading service configuration...</span>
+    </div>
+    <span class="status pending" id="service-status">READY</span>
+  </header>
+
+  <section class="panel">
+    <form id="run-form">
+      <div class="form-grid">
+        <label>Repository path
+          <input id="repo" required placeholder="C:\\path\\to\\repo" autocomplete="off">
+        </label>
+        <label class="wide">Task
+          <textarea id="task" required placeholder="Describe the code change and constraints"></textarea>
+        </label>
+        <label>Model
+          <input id="model" required autocomplete="off">
+        </label>
+        <label>Sandbox
+          <select id="sandbox-backend"></select>
+        </label>
+        <label>Max steps
+          <input id="max-steps" type="number" min="1" max="1000" value="20">
+        </label>
+        <label>Timeout (s)
+          <input id="max-duration" type="number" min="1" step="1" placeholder="No limit">
+        </label>
+        <label class="wide">Verify command
+          <input id="verify-command" placeholder="Optional: python -m pytest">
+        </label>
+        <label>Verify attempts
+          <input id="verify-attempts" type="number" min="1" max="10" value="1">
+        </label>
+        <div class="form-actions">
+          <button class="button" id="start" type="submit">Start run</button>
+        </div>
+      </div>
+      <div class="warning" id="sandbox-warning">Auto sandbox may fall back to a local process when a container backend is unavailable. Use an explicit container backend for untrusted repositories.</div>
+      <p class="hint">A verification command runs independently in the selected sandbox. Failed output is recorded and can be fed back for another attempt.</p>
+    </form>
   </section>
+
+  <section class="panel" id="run-panel">
+    <div class="runbar">
+      <div>
+        <div class="run-id" id="run-id">No run selected</div>
+        <span class="status pending" id="run-status">IDLE</span>
+      </div>
+      <div class="actions">
+        <button class="button danger" id="cancel" type="button" disabled>Cancel</button>
+        <button class="button secondary" id="resume" type="button" disabled>Resume</button>
+        <a class="button secondary" id="export" href="#" download aria-disabled="true">Export</a>
+      </div>
+    </div>
+    <p class="hint" id="run-error"></p>
+  </section>
+
+  <div class="grid">
+    <div class="stack">
+      <section class="panel">
+        <div class="panel-header"><h2>Run overview</h2></div>
+        <div class="meta-grid" id="overview"><span class="empty">Submit a run to inspect the workspace.</span></div>
+      </section>
+      <section class="panel">
+        <div class="panel-header"><h2>Diff</h2><span class="version" id="diff-files"></span></div>
+        <pre class="diff-empty" id="diff">No run selected.</pre>
+      </section>
+      <section class="panel">
+        <div class="panel-header"><h2>Attempts and verification</h2></div>
+        <div class="table-wrap" id="attempts"><span class="empty">No attempts yet.</span></div>
+      </section>
+      <section class="panel">
+        <div class="panel-header"><h2>Tool calls</h2></div>
+        <div class="table-wrap" id="tool-calls"><span class="empty">No tool calls yet.</span></div>
+      </section>
+    </div>
+    <div class="stack">
+      <section class="panel">
+        <div class="panel-header"><h2>Run metrics</h2></div>
+        <div class="metrics" id="metrics"><span class="empty">No metrics yet.</span></div>
+      </section>
+      <section class="panel">
+        <div class="panel-header"><h2>Execution controls</h2></div>
+        <ul class="security-list" id="controls"><li class="empty">No run selected.</li></ul>
+      </section>
+      <section class="panel">
+        <div class="panel-header"><h2>Trace events</h2><span class="version" id="event-count"></span></div>
+        <div class="event-list" id="events"><span class="empty">No events yet.</span></div>
+      </section>
+    </div>
+  </div>
 </main>
 <script>
-const form = document.querySelector('#run-form');
-const id = document.querySelector('#run-id');
-const status = document.querySelector('#status');
-const trace = document.querySelector('#trace');
-let timer;
-form.addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const response = await fetch('/runs', { method: 'POST', headers: {'content-type': 'application/json'},
-    body: JSON.stringify({repo: document.querySelector('#repo').value, task: document.querySelector('#task').value}) });
-  const data = await response.json();
-  if (!response.ok) { trace.textContent = JSON.stringify(data, null, 2); return; }
-  id.textContent = data.id; status.textContent = data.status;
-  clearInterval(timer); timer = setInterval(() => refresh(data.id), 1000); refresh(data.id);
-});
-async function refresh(runId) {
-  const [runResponse, traceResponse] = await Promise.all([fetch(`/runs/${runId}`), fetch(`/runs/${runId}/trace`)]);
-  const run = await runResponse.json(); const detail = await traceResponse.json();
-  status.textContent = run.status; trace.textContent = JSON.stringify(detail, null, 2);
-  if (['succeeded', 'failed', 'cancelled'].includes(run.status)) clearInterval(timer);
+const $ = (selector) => document.querySelector(selector);
+const terminalStatuses = new Set(['succeeded', 'failed', 'cancelled']);
+let activeRunId = null;
+let timer = null;
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>'"]/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
 }
+function formatNumber(value, digits = 2) {
+  if (value === null || value === undefined || value === '') return '-';
+  const number = Number(value);
+  return Number.isFinite(number) ? number.toLocaleString(undefined, {maximumFractionDigits: digits}) : '-';
+}
+function setStatus(element, value) {
+  const normalized = String(value || 'idle').toLowerCase();
+  element.className = `status ${normalized}`;
+  element.textContent = normalized.toUpperCase();
+}
+function meta(label, value) {
+  return `<div class="meta-item"><span class="meta-label">${escapeHtml(label)}</span><span class="meta-value">${escapeHtml(value)}</span></div>`;
+}
+
+async function loadConfig() {
+  try {
+    const response = await fetch('/config');
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const config = await response.json();
+    $('#version').textContent = `Service ${config.version} | configured model ${config.model}`;
+    $('#model').value = config.model || '';
+    $('#max-steps').value = config.max_steps || 20;
+    const backends = config.sandbox.allowed_backends || ['local', 'docker', 'podman', 'auto'];
+    $('#sandbox-backend').innerHTML = backends.map((backend) => `<option value="${escapeHtml(backend)}">${escapeHtml(backend)}</option>`).join('');
+    $('#sandbox-backend').value = config.sandbox.configured_backend || 'auto';
+    updateSandboxWarning();
+    setStatus($('#service-status'), 'succeeded');
+  } catch (error) {
+    $('#version').textContent = `Service configuration unavailable: ${error.message}`;
+    setStatus($('#service-status'), 'failed');
+  }
+}
+function updateSandboxWarning() {
+  $('#sandbox-warning').classList.toggle('visible', $('#sandbox-backend').value === 'auto');
+}
+$('#sandbox-backend').addEventListener('change', updateSandboxWarning);
+
+function renderMetrics(metrics) {
+  const fields = [
+    ['Attempts', metrics.attempt_count],
+    ['Steps', metrics.step_count],
+    ['Tool calls', metrics.tool_call_count],
+    ['Input tokens', metrics.input_tokens],
+    ['Output tokens', metrics.output_tokens],
+    ['Wall time (s)', formatNumber(metrics.wall_time_seconds, 1)],
+    ['Verifications', `${metrics.verification_passed || 0}/${metrics.verification_count || 0}`],
+    ['Checkpoints', metrics.checkpoint_count],
+    ['Cost', metrics.cost_status === 'estimated' ? formatNumber(metrics.estimated_cost, 6) : 'unavailable'],
+  ];
+  $('#metrics').innerHTML = fields.map(([label, value]) => `<div class="metric"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`).join('');
+}
+function renderOverview(data) {
+  const run = data.run;
+  const policy = data.verification_policy || {};
+  const config = data.config || {};
+  const resumeEvent = (data.events || []).slice().reverse().find((event) => event.type === 'run.started' && event.payload?.resume);
+  const recovery = resumeEvent ? `checkpoint sequence ${resumeEvent.payload?.checkpoint_sequence ?? 'none'}` : 'initial attempt';
+  $('#overview').innerHTML = [
+    meta('Repository', run.workdir),
+    meta('Model', config.model || run.model),
+    meta('Project', run.project_id),
+    meta('Created', new Date(run.created_at * 1000).toLocaleString()),
+    meta('Verify', policy.enabled ? `${policy.attempts} attempt(s)` : 'disabled'),
+    meta('Checkpoint', data.checkpoint.exists ? `sequence ${data.checkpoint.latest_sequence}` : 'none'),
+    meta('Recovery', recovery),
+  ].join('');
+  $('#controls').innerHTML = [
+    `<li><span>Backend</span> ${escapeHtml(config.sandbox_backend || '-')}</li>`,
+    `<li><span>Network</span> ${config.sandbox_network ? 'enabled' : 'disabled'}</li>`,
+    `<li><span>Read-only</span> ${config.sandbox_readonly ? 'enabled' : 'disabled'}</li>`,
+    `<li><span>Limits</span> ${escapeHtml(`${config.sandbox_cpu_limit || '-'} CPU | ${config.sandbox_memory_limit_mb || '-'} MiB | ${config.sandbox_pids_limit || '-'} PIDs`)}</li>`,
+    `<li><span>Timeout</span> ${escapeHtml(`${config.sandbox_timeout || '-'} s`)}</li>`,
+    `<li><span>Fallback</span> ${config.fallback_warning ? 'local fallback possible' : 'explicit backend'}</li>`,
+    `<li><span>Cancellation</span> ${data.metrics.cancellation?.completed ? 'process reclaimed' : data.metrics.cancellation?.requested ? 'requested' : 'not requested'}</li>`,
+  ].join('');
+}
+function renderDiff(diff) {
+  if (!diff || !diff.available) {
+    $('#diff').className = 'diff-empty';
+    $('#diff').textContent = diff?.reason || 'Diff unavailable.';
+    $('#diff-files').textContent = '';
+    return;
+  }
+  $('#diff').className = diff.text ? '' : 'diff-empty';
+  $('#diff').textContent = diff.text || 'Working tree is clean.';
+  $('#diff-files').textContent = diff.files?.length ? `${diff.files.length} file(s)` : 'clean';
+  if (diff.truncated) $('#diff-files').textContent += ' | truncated';
+}
+function renderAttempts(attempts, verifications) {
+  if (!attempts.length && !verifications.length) {
+    $('#attempts').innerHTML = '<span class="empty">No attempts yet.</span>';
+    return;
+  }
+  const rows = attempts.map((attempt) => `<tr><td>${escapeHtml(attempt.number)}</td><td><span class="status ${escapeHtml(attempt.status)}">${escapeHtml(attempt.status)}</span></td><td>${escapeHtml(attempt.error || attempt.answer || '-')}</td><td>${escapeHtml(attempt.checkpoint_seq || '-')}</td></tr>`).join('');
+  const checks = verifications.map((item) => `<tr><td>verify</td><td><span class="status ${item.reward ? 'succeeded' : 'failed'}">${item.reward ? 'passed' : 'failed'}</span></td><td>${escapeHtml(item.feedback || item.checks?.[0]?.command || '-')}</td><td>${escapeHtml(item.finished_at ? new Date(item.finished_at * 1000).toLocaleTimeString() : '-')}</td></tr>`).join('');
+  $('#attempts').innerHTML = `<table><thead><tr><th>Attempt</th><th>Status</th><th>Result</th><th>Checkpoint</th></tr></thead><tbody>${rows}${checks}</tbody></table>`;
+}
+function renderToolCalls(calls) {
+  if (!calls.length) { $('#tool-calls').innerHTML = '<span class="empty">No tool calls yet.</span>'; return; }
+  $('#tool-calls').innerHTML = `<table><thead><tr><th>Tool</th><th>Status</th><th>Observation</th><th>Started</th></tr></thead><tbody>${calls.map((call) => `<tr><td><code>${escapeHtml(call.name)}</code></td><td>${escapeHtml(call.status)}</td><td>${escapeHtml(call.error || call.observation || '-')}</td><td>${escapeHtml(new Date(call.started_at * 1000).toLocaleTimeString())}</td></tr>`).join('')}</tbody></table>`;
+}
+function renderEvents(events) {
+  $('#event-count').textContent = events.length ? `${events.length} event(s)` : '';
+  if (!events.length) { $('#events').innerHTML = '<span class="empty">No events yet.</span>'; return; }
+  $('#events').innerHTML = events.slice().reverse().map((event) => `<div class="event"><span>#${escapeHtml(event.sequence)}</span><span>${escapeHtml(event.type)}</span><code>${escapeHtml(JSON.stringify(event.payload || {}))}</code></div>`).join('');
+}
+function renderDetail(data) {
+  const run = data.run;
+  activeRunId = run.id;
+  $('#run-id').textContent = run.id;
+  setStatus($('#run-status'), run.status);
+  $('#run-error').textContent = run.error || '';
+  $('#cancel').disabled = terminalStatuses.has(run.status);
+  $('#resume').disabled = !['failed', 'cancelled'].includes(run.status);
+  $('#export').href = `/runs/${encodeURIComponent(run.id)}/export`;
+  $('#export').setAttribute('aria-disabled', 'false');
+  renderOverview(data);
+  renderMetrics(data.metrics || {});
+  renderDiff(data.diff);
+  renderAttempts(data.attempts || [], data.verifications || []);
+  renderToolCalls(data.tool_calls || []);
+  renderEvents(data.events || []);
+}
+async function refresh(runId = activeRunId) {
+  if (!runId) return;
+  try {
+    const response = await fetch(`/runs/${encodeURIComponent(runId)}/trace`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    renderDetail(data);
+    if (terminalStatuses.has(data.run.status)) {
+      clearInterval(timer);
+      timer = null;
+    }
+  } catch (error) {
+    $('#run-error').textContent = `Unable to load run: ${error.message}`;
+  }
+}
+function beginPolling(runId) {
+  clearInterval(timer);
+  timer = setInterval(() => refresh(runId), 1000);
+  refresh(runId);
+}
+$('#run-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  $('#start').disabled = true;
+  $('#run-error').textContent = '';
+  const verifyCommand = $('#verify-command').value.trim();
+  const body = {
+    repo: $('#repo').value.trim(),
+    task: $('#task').value.trim(),
+    model: $('#model').value.trim() || null,
+    sandbox_backend: $('#sandbox-backend').value,
+    max_steps: Number($('#max-steps').value || 20),
+    max_duration: $('#max-duration').value ? Number($('#max-duration').value) : null,
+    verify_command: verifyCommand || null,
+    verify_attempts: verifyCommand ? Number($('#verify-attempts').value || 1) : 1,
+  };
+  try {
+    const response = await fetch('/runs', {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body)});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || `HTTP ${response.status}`);
+    activeRunId = data.id;
+    beginPolling(activeRunId);
+  } catch (error) {
+    $('#run-error').textContent = error.message;
+  } finally {
+    $('#start').disabled = false;
+  }
+});
+$('#cancel').addEventListener('click', async () => {
+  if (!activeRunId) return;
+  const response = await fetch(`/runs/${encodeURIComponent(activeRunId)}/cancel`, {method: 'POST'});
+  if (!response.ok) $('#run-error').textContent = `Cancel failed: HTTP ${response.status}`;
+  await refresh();
+});
+$('#resume').addEventListener('click', async () => {
+  if (!activeRunId) return;
+  $('#resume').disabled = true;
+  const response = await fetch(`/runs/${encodeURIComponent(activeRunId)}/resume`, {method: 'POST'});
+  const data = await response.json();
+  if (!response.ok) $('#run-error').textContent = data.detail || `Resume failed: HTTP ${response.status}`;
+  beginPolling(activeRunId);
+});
+loadConfig();
 </script>
 </body>
 </html>

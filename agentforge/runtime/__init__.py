@@ -7,6 +7,7 @@ from .engine import (
     RunTimedOut,
     RuntimeResult,
     ToolCallReplayError,
+    VerificationFailed,
 )
 from .models import (
     Attempt,
@@ -34,6 +35,7 @@ __all__ = [
     "RunCancelled",
     "RunTimedOut",
     "ToolCallReplayError",
+    "VerificationFailed",
     "RuntimeContext",
     "RuntimeResult",
     "Attempt",

@@ -462,6 +462,21 @@ class RuntimeStore:
                 continue
         return None
 
+    def list_checkpoints(self, run_id: str, *, complete_only: bool = False) -> list[Checkpoint]:
+        query = "SELECT * FROM checkpoints WHERE run_id = ? AND is_event = 0"
+        params: list[Any] = [run_id]
+        if complete_only:
+            query += " AND complete = 1"
+        query += " ORDER BY sequence"
+        rows = self._connection.execute(query, tuple(params)).fetchall()
+        checkpoints: list[Checkpoint] = []
+        for row in rows:
+            try:
+                checkpoints.append(_checkpoint_from_row(row))
+            except CheckpointCorruptionError:
+                continue
+        return checkpoints
+
     def next_checkpoint_sequence(self, run_id: str) -> int:
         with self._lock:
             existing = self._connection.execute(

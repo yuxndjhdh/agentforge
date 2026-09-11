@@ -28,6 +28,9 @@ def test_run_api_lifecycle(tmp_path, monkeypatch):
 
     with TestClient(app) as client:
         assert client.get("/").status_code == 200
+        config = client.get("/config")
+        assert config.status_code == 200
+        assert config.json()["sandbox"]["allowed_backends"] == ["local", "docker", "podman", "auto"]
         created = client.post(
             "/runs",
             json={"repo": str(repo), "task": "noop", "run_id": "api-test"},
@@ -42,6 +45,75 @@ def test_run_api_lifecycle(tmp_path, monkeypatch):
         assert cancelled.status_code == 200
         assert cancelled.json()["status"] == "cancelled"
         assert client.get("/metrics").status_code == 200
+
+
+def test_api_workbench_detail_supports_verify_metrics_diff_and_export(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    class FakeAgent:
+        def __init__(self, workdir):
+            self.workdir = Path(workdir)
+            self.calls = 0
+            self.memory = type("Memory", (), {"steps": []})()
+            self.model = type("Model", (), {"compressions": []})()
+            self.tools = {}
+
+        def run(self, prompt, reset=True, max_steps=20):
+            self.calls += 1
+            if self.calls == 2:
+                (self.workdir / "verified.txt").write_text("ok\n", encoding="utf-8")
+            return f"answer {self.calls}"
+
+    monkeypatch.setattr("agentforge.harness.make_agent", lambda cfg, workdir, **kwargs: FakeAgent(workdir))
+    cfg = ModelConfig(
+        base_url="http://fake",
+        api_key="",
+        model="configured-model",
+        sandbox_backend="local",
+        sandbox_disk_limit_mb=0,
+        state_db=str(tmp_path / "state.sqlite3"),
+        trace_dir=str(tmp_path / "traces"),
+    )
+    service = RunService(cfg)
+    app = create_app(service=service)
+    command = 'python -c "from pathlib import Path; raise SystemExit(0 if Path(\'verified.txt\').exists() else 1)"'
+    with TestClient(app) as client:
+        created = client.post(
+            "/runs",
+            json={
+                "repo": str(repo),
+                "task": "verified task",
+                "run_id": "workbench-run",
+                "model": "request-model",
+                "sandbox_backend": "local",
+                "max_steps": 7,
+                "verify_command": command,
+                "verify_attempts": 2,
+            },
+        )
+        assert created.status_code == 202
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            loaded = client.get("/runs/workbench-run").json()
+            if loaded["status"] == "succeeded":
+                break
+            time.sleep(0.02)
+        assert loaded["status"] == "succeeded"
+        detail = client.get("/runs/workbench-run/trace")
+        assert detail.status_code == 200
+        body = detail.json()
+        assert body["config"]["model"] == "request-model"
+        assert body["config"]["sandbox_backend"] == "local"
+        assert body["metrics"]["verification_count"] == 2
+        assert body["metrics"]["verification_passed"] == 1
+        assert body["checkpoint"]["exists"] is True
+        assert body["verifications"][0]["reward"] == 0
+        assert body["verifications"][1]["reward"] == 1
+        assert client.get("/runs/workbench-run/summary").json()["metrics"]["step_count"] >= 0
+        exported = client.get("/runs/workbench-run/export")
+        assert exported.status_code == 200
+        assert "attachment" in exported.headers["content-disposition"]
 
 
 def test_api_benchmark_uses_full_registry_and_rejects_unknown(tmp_path, monkeypatch):
@@ -281,6 +353,7 @@ def test_resume_api_returns_new_attempt_and_completes_with_fake_provider(tmp_pat
     service = RunService(cfg)
 
     def fail(_ctx):
+        _ctx.checkpoint({"cursor": 1}, complete=True)
         raise RuntimeError("interrupted")
 
     service.runtime.run("resume-me", str(repo), fail, run_id="resume-me")
@@ -289,6 +362,7 @@ def test_resume_api_returns_new_attempt_and_completes_with_fake_provider(tmp_pat
         resumed = client.post("/runs/resume-me/resume")
         assert resumed.status_code == 202
         assert resumed.json()["attempt_id"]
+        assert resumed.json()["checkpoint_sequence"] == 1
         conflict = client.post("/runs/resume-me/resume")
         assert conflict.status_code == 409
         assert "resume in progress" in conflict.json()["detail"]
@@ -299,4 +373,8 @@ def test_resume_api_returns_new_attempt_and_completes_with_fake_provider(tmp_pat
                 break
             time.sleep(0.02)
         assert loaded["status"] == "succeeded"
-        assert len(client.get("/runs/resume-me/trace").json()["attempts"]) == 2
+        trace = client.get("/runs/resume-me/trace").json()
+        assert len(trace["attempts"]) == 2
+        started = [event for event in trace["events"] if event["type"] == "run.started"]
+        assert started[-1]["payload"]["resume"] is True
+        assert started[-1]["payload"]["checkpoint_sequence"] == 1

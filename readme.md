@@ -107,16 +107,33 @@ python scripts/summarize_benchmark.py \
 ```bash
 python -m pip install -e ".[api]"
 python -m agentforge serve --port 8000
+# no-model workbench/API acceptance smoke
+python scripts/workbench_smoke.py
 ```
 
 ```text
-POST /runs                    POST /runs/{id}/cancel
-GET  /runs/{id}               POST /runs/{id}/resume
-GET  /runs/{id}/trace         GET  /benchmarks/{id}
-POST /benchmarks              GET  /metrics
+GET  /config                  POST /runs
+GET  /runs/{id}               GET  /runs/{id}/summary
+GET  /runs/{id}/trace         GET  /runs/{id}/export
+POST /runs/{id}/cancel        POST /runs/{id}/resume
+POST /benchmarks              GET  /benchmarks/{id}
+GET  /metrics
 ```
 
-`GET /` 是一个可提交任务、轮询状态和查看 trace 的简易运行页面。CLI 与 API 调用同一个 `AgentRuntime`。`AGENTFORGE_STATE_DB` 保存 run 和 benchmark job 的状态、配置、任务列表、报告路径及错误，`AGENTFORGE_TRACE_DIR` 保存事件、trace 和 benchmark 报告。`/metrics` 输出 Prometheus counters 和延迟 histograms，OTLP exporter 通过 `OTEL_EXPORTER_OTLP_ENDPOINT` 可选启用；未安装观测依赖或 exporter 不可用时仍可本地运行。
+`GET /` 是一个可提交任务、选择模型和 sandbox backend、配置独立验收、轮询状态、审查 Diff/Attempt/Verification/Tool Call/Trace 并执行 cancel/resume 的运行工作台。`POST /runs` 支持 `model`、`sandbox_backend`、`max_steps`、`max_duration`、`verify_command` 和 `verify_attempts`；验收命令通过选定 sandbox 执行，失败输出会回喂给同一 Agent，且所有 checks 保存在 run trace 中。`GET /runs/{id}/export` 返回可下载的完整 JSON 摘要。CLI 与 API 调用同一个 `AgentRuntime`。`AGENTFORGE_STATE_DB` 保存 run 和 benchmark job 的状态、配置、任务列表、报告路径及错误，`AGENTFORGE_TRACE_DIR` 保存事件、trace 和 benchmark 报告。`/metrics` 输出 Prometheus counters 和延迟 histograms，OTLP exporter 通过 `OTEL_EXPORTER_OTLP_ENDPOINT` 可选启用；未安装观测依赖或 exporter 不可用时仍可本地运行。
+
+Impact 汇总由原始 benchmark 报告自动生成，不手工录入数字：
+
+```bash
+python scripts/summarize_impact.py \
+  runs/benchmarks/v0.3.0-A-20260911/report.json \
+  runs/benchmarks/v0.3.0-B-20260911/report.json \
+  runs/benchmarks/v0.3.0-C-20260911/report.json \
+  runs/benchmarks/v0.3.0-D-20260911/report.json \
+  --out docs/impact_summary.json
+```
+
+`docs/impact_summary.json` 保存原始报告 SHA-256、实验配置、分母、公式和限制。当前数据是单模型固定任务集的描述性 benchmark，不是用户 Impact 证据；没有供应商费率时成本为 `unavailable`。
 
 ## Runtime 与恢复
 

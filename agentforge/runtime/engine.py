@@ -42,6 +42,10 @@ class ToolCallReplayError(RuntimeError):
     """A previous tool call is incomplete or failed and replay was not allowed."""
 
 
+class VerificationFailed(RuntimeError):
+    """Raised when an independent run verification does not pass."""
+
+
 @dataclass
 class RuntimeContext:
     runtime: "AgentRuntime"
@@ -396,10 +400,12 @@ class AgentRuntime:
             raise ValueError(f"run {run.id} is cancelled; pass resume=True to continue")
 
         restored_state: dict[str, Any] = {}
+        resume_checkpoint_sequence: int | None = None
         if resume:
             checkpoint = self.store.latest_checkpoint(run.id)
             if checkpoint is not None:
                 restored_state = dict(checkpoint.state)
+                resume_checkpoint_sequence = checkpoint.sequence
 
         attempts = self.store.list_attempts(run.id)
         attempt = Attempt.create(run.id, len(attempts))
@@ -427,7 +433,12 @@ class AgentRuntime:
                 attempt_id=attempt.id,
                 payload={"trace_id": trace_id},
             )
-        self.emit(run.id, "run.started", attempt_id=attempt.id, payload={"resume": resume})
+        self.emit(
+            run.id,
+            "run.started",
+            attempt_id=attempt.id,
+            payload={"resume": resume, "checkpoint_sequence": resume_checkpoint_sequence},
+        )
         self.emit(run.id, "attempt.started", attempt_id=attempt.id, payload=attempt.to_record())
         if attempt_callback is not None:
             attempt_callback(attempt)
@@ -576,9 +587,20 @@ class AgentRuntime:
         user_id: str = "default",
         max_duration: float | None = None,
         attempt_callback: Callable[[Attempt], None] | None = None,
+        verify_command: str | None = None,
+        verify_attempts: int = 1,
     ) -> RuntimeResult:
-        """Run a smolagents instance and persist only this invocation's steps."""
-        before = len(getattr(getattr(agent, "memory", None), "steps", []) or []) if agent else 0
+        """Run a smolagents instance and persist only this invocation's steps.
+
+        When ``verify_command`` is supplied, the command is executed through
+        the configured sandbox after each agent attempt. Failed checks are
+        fed back to the same agent until ``verify_attempts`` is exhausted.
+        """
+        normalized_verify = str(verify_command or "").strip() or None
+        if verify_attempts < 1:
+            raise ValueError("verify_attempts must be >= 1")
+        if normalized_verify is None and verify_attempts != 1:
+            raise ValueError("verify_attempts requires verify_command")
         built_agent = agent
 
         def execute(context: RuntimeContext) -> str:
@@ -597,28 +619,47 @@ class AgentRuntime:
                 )
                 with self._lock:
                     self._active[context.run.id] = (built_agent, context.cancel_event, context)
-            self._bind_agent_events(built_agent, context)
-            try:
-                kwargs: dict[str, Any] = {"reset": reset}
+            feedback = ""
+            answer = ""
+            for attempt_index in range(verify_attempts if normalized_verify else 1):
+                self._bind_agent_events(built_agent, context)
+                prompt = task
+                if feedback:
+                    prompt = f"{task}\n\n[独立验收未通过，请修正后重试]\n{feedback}"
+                before = len(getattr(getattr(built_agent, "memory", None), "steps", []) or [])
                 try:
-                    signature = inspect.signature(built_agent.run)
-                    if "max_steps" in signature.parameters or any(
-                        parameter.kind == inspect.Parameter.VAR_KEYWORD
-                        for parameter in signature.parameters.values()
-                    ):
-                        kwargs["max_steps"] = context.run.max_steps
-                except (TypeError, ValueError):
-                    pass
-                output = built_agent.run(task, **kwargs)
-            finally:
-                new_steps = self._agent_steps(built_agent, before)
-                context.trace_steps.extend(new_steps)
+                    kwargs: dict[str, Any] = {"reset": reset if attempt_index == 0 else False}
+                    try:
+                        signature = inspect.signature(built_agent.run)
+                        if "max_steps" in signature.parameters or any(
+                            parameter.kind == inspect.Parameter.VAR_KEYWORD
+                            for parameter in signature.parameters.values()
+                        ):
+                            kwargs["max_steps"] = context.run.max_steps
+                    except (TypeError, ValueError):
+                        pass
+                    answer = str(built_agent.run(prompt, **kwargs))
+                finally:
+                    new_steps = self._agent_steps(built_agent, before)
+                    context.trace_steps.extend(new_steps)
+                    self._persist_agent_steps(context, new_steps)
                 model = getattr(built_agent, "model", None)
                 compressions = getattr(model, "compressions", None)
                 if isinstance(compressions, list):
                     context.compression = [item for item in compressions if isinstance(item, dict)]
-                self._persist_agent_steps(context, new_steps)
-            return output
+
+                if normalized_verify is None:
+                    return answer
+                verification = self._run_verification(
+                    context,
+                    cfg,
+                    normalized_verify,
+                    attempt_index=attempt_index,
+                )
+                if verification.reward:
+                    return answer
+                feedback = verification.feedback or "独立验收未通过"
+            raise VerificationFailed(feedback)
 
         result = self.run(
             task,
@@ -636,6 +677,71 @@ class AgentRuntime:
         )
         result.agent = built_agent
         return result
+
+    def _run_verification(
+        self,
+        context: RuntimeContext,
+        cfg: Any,
+        command: str,
+        *,
+        attempt_index: int,
+    ) -> Verification:
+        from ..sandbox import Sandbox
+
+        sandbox = Sandbox.from_config(cfg)
+        sandbox.cancel_event = context.cancel_event
+
+        def record_policy(payload: dict[str, Any]) -> None:
+            self.emit(
+                context.run.id,
+                "policy.decision",
+                attempt_id=context.attempt.id,
+                payload=payload,
+            )
+
+        sandbox.decision_sink = record_policy
+        self.store.update_run(context.run.id, status=RunStatus.VERIFYING)
+        self.emit(
+            context.run.id,
+            "run.verifying",
+            attempt_id=context.attempt.id,
+            payload={"command": command, "attempt": attempt_index + 1},
+        )
+        try:
+            result = sandbox.execute(command, cwd=context.run.workdir)
+        finally:
+            current = self.store.get_run(context.run.id)
+            if current is not None and not current.cancel_requested:
+                self.store.update_run(context.run.id, status=RunStatus.RUNNING)
+        passed = result.returncode == 0 and not result.error and not result.timed_out
+        feedback_parts = []
+        if result.error:
+            feedback_parts.append(result.error)
+        if result.timed_out:
+            feedback_parts.append(f"verification timed out after {sandbox.timeout:g}s")
+        if result.returncode not in (None, 0):
+            feedback_parts.append(f"exit={result.returncode}")
+        if result.stdout.strip():
+            feedback_parts.append(f"stdout:\n{result.stdout[-4000:]}")
+        if result.stderr.strip():
+            feedback_parts.append(f"stderr:\n{result.stderr[-4000:]}")
+        feedback = "\n".join(feedback_parts)
+        check = {
+            "kind": "command",
+            "command": command,
+            "attempt": attempt_index + 1,
+            "returncode": result.returncode,
+            "stdout": result.stdout[-4000:],
+            "stderr": result.stderr[-4000:],
+            "timed_out": result.timed_out,
+            "output_limited": result.output_limited,
+            "error": result.error,
+        }
+        return context.verify(
+            reward=1 if passed else 0,
+            checks=[check],
+            feedback=feedback,
+        )
 
     def cancel(self, run_id: str) -> Run | None:
         run = self.store.get_run(run_id)

@@ -361,6 +361,69 @@ def test_run_agent_adapter_persists_only_current_memory_and_rebuilds_trace(tmp_p
         store.close()
 
 
+def test_run_agent_independent_verification_retries_with_feedback(tmp_path):
+    runtime, store = _runtime(tmp_path)
+    try:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        class FakeAgent:
+            def __init__(self):
+                self.memory = type("Memory", (), {"steps": []})()
+                self.model = type("Model", (), {"compressions": []})()
+                self.tools = {}
+                self.calls = []
+
+            def run(self, prompt, reset=True, max_steps=20):
+                self.calls.append({"prompt": prompt, "reset": reset, "max_steps": max_steps})
+                if len(self.calls) == 2:
+                    (repo / "verified.txt").write_text("ok\n", encoding="utf-8")
+                return "agent answer"
+
+        cfg = type(
+            "Config",
+            (),
+            {
+                "model": "fake",
+                "max_steps": 4,
+                "sandbox_backend": "local",
+                "sandbox_timeout": 5.0,
+                "sandbox_max_output_bytes": 4096,
+                "sandbox_readonly": False,
+                "sandbox_network": False,
+                "sandbox_cpu_limit": 1.0,
+                "sandbox_memory_limit_mb": 64,
+                "sandbox_pids_limit": 16,
+                "sandbox_disk_limit_mb": 0,
+                "sandbox_image": "python:3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285",
+                "sandbox_whitelist": "",
+                "sandbox_denylist": "",
+                "sandbox_deny_patterns": "",
+            },
+        )()
+        agent = FakeAgent()
+        result = runtime.run_agent(
+            cfg,
+            "make verified change",
+            str(repo),
+            agent=agent,
+            verify_command='python -c "from pathlib import Path; raise SystemExit(0 if Path(\'verified.txt\').exists() else 1)"',
+            verify_attempts=2,
+        )
+
+        assert result.run.status == RunStatus.SUCCEEDED
+        assert len(agent.calls) == 2
+        assert agent.calls[0]["reset"] is True
+        assert agent.calls[1]["reset"] is False
+        assert "独立验收未通过" in agent.calls[1]["prompt"]
+        verifications = store.list_verifications(result.run.id)
+        assert [item.reward for item in verifications] == [0, 1]
+        assert all(item.checks[0]["kind"] == "command" for item in verifications)
+        assert any(event["type"] == "run.verifying" for event in store.events.read(result.run.id))
+    finally:
+        store.close()
+
+
 def test_recover_stale_run_closes_attempt_and_records_event(tmp_path):
     store = RuntimeStore(tmp_path / "state.sqlite3", tmp_path / "events")
     repo = tmp_path / "repo"

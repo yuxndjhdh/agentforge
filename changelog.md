@@ -1,14 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.3.1 - 2026-09-11
 
-- Add reproducible A/B/C/D benchmark reporting and failure audit records;
-  supplier billing rates remain `unavailable`.
-- Normalize delivery document names and the package README path for
-  case-sensitive clean clones.
-- Validation: 112 tests passed and 1 platform-limited test was skipped;
-  Docker live integration passed 3 tests. Complete quota/attack-matrix and
-  remote CI evidence remain pending.
+- Make benchmark cost reporting fail closed when positive supplier rates are
+  unavailable; token totals remain available without a billing conclusion.
+- Add reproducible A/B/C/D benchmark audit evidence and live Docker probes for
+  cgroup CPU/memory/PID limits and read-only paths outside `/workspace`.
+- Stabilize Linux CI imports and cross-platform mypy checks; verify Python
+  3.11/3.12/3.13, API E2E, Docker integration, packaging, and coverage in
+  GitHub Actions.
+- Validation: 114 local tests passed and 1 platform-limited test was skipped;
+  local Docker integration passed 5 tests. Benchmark supplier rates,
+  overlayfs quota enforcement, and the full container attack matrix remain
+  explicitly unverified.
 
 ## 0.3.0 - 2026-09-10
 

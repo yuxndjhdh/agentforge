@@ -92,13 +92,13 @@ selftest   不用 LLM 的自检（工具链 + trace 落盘）
 ```bash
 python -m agentforge benchmark --trials 5 --k 5 \
   --context-compression --verify-retry --verify-attempts 3 \
-  --out runs/benchmarks/v0.3.0-D
+  --out runs/benchmarks/v0.3.0-D-20260911
 
 python scripts/summarize_benchmark.py \
-  runs/benchmarks/v0.3.0-A/report.json \
-  runs/benchmarks/v0.3.0-B/report.json \
-  runs/benchmarks/v0.3.0-C/report.json \
-  runs/benchmarks/v0.3.0-D/report.json \
+  runs/benchmarks/v0.3.0-A-20260911/report.json \
+  runs/benchmarks/v0.3.0-B-20260911/report.json \
+  runs/benchmarks/v0.3.0-C-20260911/report.json \
+  runs/benchmarks/v0.3.0-D-20260911/report.json \
   --out docs/benchmark_report.md
 ```
 

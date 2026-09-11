@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.2 - 2026-09-11
+
+- Add the run Workbench with per-run model and sandbox selection, independent
+  verification, bounded workspace Diff, Attempts, Tool Calls, Trace, metrics,
+  cancel, resume, and JSON export views.
+- Persist verification feedback and expose the checkpoint sequence used by a
+  resumed attempt.
+- Add a reproducible no-model Workbench smoke script and a machine-readable
+  Impact summary generated from the four benchmark reports. Impact values
+  remain descriptive single-model benchmark evidence; cost remains
+  `unavailable` without supplier rates.
+
 ## 0.3.1 - 2026-09-11
 
 - Make benchmark cost reporting fail closed when positive supplier rates are

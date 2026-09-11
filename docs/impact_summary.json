@@ -1,0 +1,282 @@
+{
+  "schema_version": 1,
+  "source": {
+    "reports": {
+      "A": {
+        "path": "runs\\benchmarks\\v0.3.0-A-20260911\\report.json",
+        "sha256": "4304518dce48e29475d40fc610cc772639e276cbd0b6380c7143126bb3fe7cb1",
+        "experiment_id": "A",
+        "git_commit": "e256238d158e36708019a7754876670744141e67",
+        "workspace_dirty": false
+      },
+      "B": {
+        "path": "runs\\benchmarks\\v0.3.0-B-20260911\\report.json",
+        "sha256": "6f6d688800b3a723b43bfb125d8c15fafa9314cd128cb275d90fa8f82cf8bcb8",
+        "experiment_id": "B",
+        "git_commit": "e256238d158e36708019a7754876670744141e67",
+        "workspace_dirty": false
+      },
+      "C": {
+        "path": "runs\\benchmarks\\v0.3.0-C-20260911\\report.json",
+        "sha256": "b8095efaf6ff41674acbeddc2e056a68f506e26d608d2f9a848e24a70280e856",
+        "experiment_id": "C",
+        "git_commit": "e256238d158e36708019a7754876670744141e67",
+        "workspace_dirty": false
+      },
+      "D": {
+        "path": "runs\\benchmarks\\v0.3.0-D-20260911\\report.json",
+        "sha256": "6d0447166cc2d291b70856c5470948f9b28db48dd613d1050d1ca47723b31b82",
+        "experiment_id": "D",
+        "git_commit": "e256238d158e36708019a7754876670744141e67",
+        "workspace_dirty": false
+      }
+    },
+    "model": "deepseek-v4-flash-vision-exp",
+    "git_commit": "e256238d158e36708019a7754876670744141e67",
+    "task_count": 23,
+    "task_order": [
+      "fix-add",
+      "fix-subtract",
+      "fix-uppercase",
+      "fix-clamp",
+      "fix-average",
+      "fix-json-key",
+      "fix-safe-divide",
+      "fix-cache",
+      "fix-retry",
+      "add-unit-test",
+      "add-api-field",
+      "api-status-code",
+      "cli-argument",
+      "config-default",
+      "config-env",
+      "refactor-helper",
+      "security-path",
+      "security-secret",
+      "docs-command",
+      "type-contract",
+      "fix-date-format",
+      "fix-filter",
+      "fix-immutability"
+    ],
+    "episodes_total": 460,
+    "description": "descriptive benchmark summary; not user impact evidence"
+  },
+  "variants": {
+    "A": {
+      "experiment": {
+        "experiment_id": "A",
+        "context_compression_enabled": false,
+        "verify_enabled": false,
+        "max_attempts": 1
+      },
+      "metrics": {
+        "episodes": 115,
+        "first_attempt_successes": 96,
+        "final_successes": 96,
+        "first_attempt_failures": 19,
+        "recovered_first_attempt_failures": 0,
+        "first_attempt_success_rate": 0.8347826086956521,
+        "final_success_rate": 0.8347826086956521,
+        "failure_recovery_rate": 0.0,
+        "pass_at_1": 0.8347826086956521,
+        "pass_at_k": 0.9130434782608695,
+        "avg_attempts": 1.0,
+        "avg_steps": 6.260869565217392,
+        "total_input_tokens": 2048033,
+        "total_output_tokens": 101767,
+        "avg_input_tokens": 17808.982608695653,
+        "avg_output_tokens": 884.9304347826087,
+        "first_attempt_input_tokens": 2048033,
+        "first_attempt_output_tokens": 101767,
+        "verify_incremental_input_tokens": 0,
+        "verify_incremental_output_tokens": 0,
+        "compression_triggered_episodes": 0,
+        "compression_trigger_rate": 0.0,
+        "compression_saved_tokens": 0,
+        "p50_latency_seconds": 10.643750600000203,
+        "p95_latency_seconds": 24.810670600003505,
+        "cost": {
+          "status": "unavailable",
+          "input_rate_per_million": null,
+          "output_rate_per_million": null,
+          "estimated_cost": null
+        }
+      }
+    },
+    "B": {
+      "experiment": {
+        "experiment_id": "B",
+        "context_compression_enabled": true,
+        "verify_enabled": false,
+        "max_attempts": 1
+      },
+      "metrics": {
+        "episodes": 115,
+        "first_attempt_successes": 92,
+        "final_successes": 92,
+        "first_attempt_failures": 23,
+        "recovered_first_attempt_failures": 0,
+        "first_attempt_success_rate": 0.8,
+        "final_success_rate": 0.8,
+        "failure_recovery_rate": 0.0,
+        "pass_at_1": 0.7999999999999999,
+        "pass_at_k": 0.8260869565217391,
+        "avg_attempts": 1.0,
+        "avg_steps": 6.104347826086957,
+        "total_input_tokens": 1971216,
+        "total_output_tokens": 105684,
+        "avg_input_tokens": 17141.008695652174,
+        "avg_output_tokens": 918.991304347826,
+        "first_attempt_input_tokens": 1971216,
+        "first_attempt_output_tokens": 105684,
+        "verify_incremental_input_tokens": 0,
+        "verify_incremental_output_tokens": 0,
+        "compression_triggered_episodes": 20,
+        "compression_trigger_rate": 0.17391304347826086,
+        "compression_saved_tokens": 45109,
+        "p50_latency_seconds": 11.054033000000345,
+        "p95_latency_seconds": 21.27413140000135,
+        "cost": {
+          "status": "unavailable",
+          "input_rate_per_million": null,
+          "output_rate_per_million": null,
+          "estimated_cost": null
+        }
+      }
+    },
+    "C": {
+      "experiment": {
+        "experiment_id": "C",
+        "context_compression_enabled": false,
+        "verify_enabled": true,
+        "max_attempts": 3
+      },
+      "metrics": {
+        "episodes": 115,
+        "first_attempt_successes": 92,
+        "final_successes": 115,
+        "first_attempt_failures": 23,
+        "recovered_first_attempt_failures": 23,
+        "first_attempt_success_rate": 0.8,
+        "final_success_rate": 1.0,
+        "failure_recovery_rate": 1.0,
+        "pass_at_1": 1.0,
+        "pass_at_k": 1.0,
+        "avg_attempts": 1.2,
+        "avg_steps": 7.165217391304348,
+        "total_input_tokens": 3505764,
+        "total_output_tokens": 199934,
+        "avg_input_tokens": 30484.904347826086,
+        "avg_output_tokens": 1738.5565217391304,
+        "first_attempt_input_tokens": 2142051,
+        "first_attempt_output_tokens": 173678,
+        "verify_incremental_input_tokens": 1363713,
+        "verify_incremental_output_tokens": 26256,
+        "compression_triggered_episodes": 0,
+        "compression_trigger_rate": 0.0,
+        "compression_saved_tokens": 0,
+        "p50_latency_seconds": 10.39613719999761,
+        "p95_latency_seconds": 38.379668100002164,
+        "cost": {
+          "status": "unavailable",
+          "input_rate_per_million": null,
+          "output_rate_per_million": null,
+          "estimated_cost": null
+        }
+      }
+    },
+    "D": {
+      "experiment": {
+        "experiment_id": "D",
+        "context_compression_enabled": true,
+        "verify_enabled": true,
+        "max_attempts": 3
+      },
+      "metrics": {
+        "episodes": 115,
+        "first_attempt_successes": 92,
+        "final_successes": 115,
+        "first_attempt_failures": 23,
+        "recovered_first_attempt_failures": 23,
+        "first_attempt_success_rate": 0.8,
+        "final_success_rate": 1.0,
+        "failure_recovery_rate": 1.0,
+        "pass_at_1": 1.0,
+        "pass_at_k": 1.0,
+        "avg_attempts": 1.2,
+        "avg_steps": 7.243478260869566,
+        "total_input_tokens": 2556344,
+        "total_output_tokens": 154723,
+        "avg_input_tokens": 22229.078260869566,
+        "avg_output_tokens": 1345.4173913043478,
+        "first_attempt_input_tokens": 2014443,
+        "first_attempt_output_tokens": 116973,
+        "verify_incremental_input_tokens": 541901,
+        "verify_incremental_output_tokens": 37750,
+        "compression_triggered_episodes": 29,
+        "compression_trigger_rate": 0.25217391304347825,
+        "compression_saved_tokens": 401797,
+        "p50_latency_seconds": 10.52202170000237,
+        "p95_latency_seconds": 37.930698800002574,
+        "cost": {
+          "status": "unavailable",
+          "input_rate_per_million": null,
+          "output_rate_per_million": null,
+          "estimated_cost": null
+        }
+      }
+    }
+  },
+  "comparisons": {
+    "verify_retry": {
+      "baseline": "A",
+      "variants": [
+        "C",
+        "D"
+      ],
+      "formula": "recovered_first_attempt_failures / first_attempt_failures",
+      "C": {
+        "first_attempt_success_rate": 0.8,
+        "final_success_rate": 1.0,
+        "absolute_final_minus_first": 0.19999999999999996,
+        "recovered_first_attempt_failures": 23,
+        "failure_recovery_rate": 1.0
+      },
+      "D": {
+        "first_attempt_success_rate": 0.8,
+        "final_success_rate": 1.0,
+        "absolute_final_minus_first": 0.19999999999999996,
+        "recovered_first_attempt_failures": 23,
+        "failure_recovery_rate": 1.0
+      }
+    },
+    "context_compression": {
+      "baseline": "C",
+      "variant": "D",
+      "formula": "(baseline_avg_input_tokens - variant_avg_input_tokens) / baseline_avg_input_tokens",
+      "final_success_rate_delta": 0.0,
+      "avg_input_tokens_delta": -8255.82608695652,
+      "avg_output_tokens_delta": -393.1391304347826,
+      "avg_input_token_reduction_rate": 0.2708168604617994,
+      "total_input_tokens_delta": -949420.0,
+      "total_output_tokens_delta": -45211.0
+    }
+  },
+  "metric_definitions": {
+    "first_attempt_success_rate": "count(first_reward == 1) / episode_count",
+    "final_success_rate": "count(reward == 1) / episode_count",
+    "failure_recovery_rate": "count(first_reward == 0 and reward == 1) / count(first_reward == 0)",
+    "avg_input_tokens": "sum(input_tokens) / episode_count",
+    "avg_output_tokens": "sum(output_tokens) / episode_count",
+    "compression_trigger_rate": "count(compression_trigger_count > 0) / episode_count",
+    "estimated_cost": "input_tokens / 1_000_000 * input_rate + output_tokens / 1_000_000 * output_rate"
+  },
+  "limitations": [
+    "single model and fixed task set",
+    "five trials per task; descriptive results, not a significance test",
+    "not real-user Impact evidence",
+    "cost is unavailable without positive supplier rates",
+    "Docker benchmark evidence is not a complete container security proof"
+  ]
+}

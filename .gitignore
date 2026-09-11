@@ -11,3 +11,11 @@ runs/
 build/
 dist/
 *.egg-info/
+
+# Local working notes, not project documentation
+HANDOFF.md
+docs/current_remaining_tasks_plan.md
+docs/finalization_and_validation_plan.md
+docs/next_steps_plan.md
+docs/productization_impact_plan.md
+docs/project_completion_plan.md

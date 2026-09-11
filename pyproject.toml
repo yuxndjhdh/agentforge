@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentforge"
-version = "0.3.1"
+version = "0.3.2"
 description = "Reliable code-agent execution, evaluation, tracing, and sandbox runtime"
 readme = "readme.md"
 requires-python = ">=3.11"

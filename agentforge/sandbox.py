@@ -252,6 +252,7 @@ class Sandbox:
                     )
                 )
         try:
+            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
             proc = subprocess.Popen(
                 argv,
                 cwd=cwd,
@@ -260,7 +261,7 @@ class Sandbox:
                 stderr=subprocess.PIPE,
                 env=self.env(env, workdir=cwd),
                 start_new_session=(os.name != "nt"),
-                creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0),
+                creationflags=creationflags,
             )
         except (OSError, ValueError) as exc:
             return ExecutionResult(None, "", "", error=f"{type(exc).__name__}: {exc}")

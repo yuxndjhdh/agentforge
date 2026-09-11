@@ -16,7 +16,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import date
-from typing import Any
+from typing import Any, cast
 
 if os.name == "nt":  # pragma: no cover - exercised by Windows integration runs
     import msvcrt
@@ -65,17 +65,21 @@ def _process_lock(path: str):
                 stream.write(b"0")
                 stream.flush()
             stream.seek(0)
-            msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+            msvcrt_api = cast(Any, msvcrt)
+            msvcrt_api.locking(stream.fileno(), msvcrt_api.LK_LOCK, 1)
         else:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)  # type: ignore[attr-defined]
+            fcntl_api = cast(Any, fcntl)
+            fcntl_api.flock(stream.fileno(), fcntl_api.LOCK_EX)
         try:
             yield
         finally:
             if os.name == "nt":
                 stream.seek(0)
-                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                msvcrt_api = cast(Any, msvcrt)
+                msvcrt_api.locking(stream.fileno(), msvcrt_api.LK_UNLCK, 1)
             else:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
+                fcntl_api = cast(Any, fcntl)
+                fcntl_api.flock(stream.fileno(), fcntl_api.LOCK_UN)
 
 
 @dataclass

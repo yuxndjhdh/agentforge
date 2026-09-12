@@ -6,6 +6,8 @@ import json
 import pytest
 
 from agentforge.fault_injection import (
+    FAULT_FORMAL_DECLARED_TOTAL,
+    FAULT_FORMAL_MATRIX_TOTAL,
     FAULT_SCENARIOS,
     FAULT_SUITE_VERSION,
     SCENARIO_BY_NAME,
@@ -13,8 +15,12 @@ from agentforge.fault_injection import (
     FaultTrial,
     SideEffectLedger,
     _tree_hash,
+    fault_matrix_plan,
+    fault_matrix_sha256,
     summarize_fault_trials,
 )
+from scripts.run_fault_matrix import _validate_existing, run_matrix
+from scripts.summarize_fault_matrix import build_summary
 
 
 def _result(scenario: FaultScenario, **overrides) -> dict:
@@ -56,6 +62,19 @@ def test_fault_scenario_registry_is_unique_and_declares_expected_outcomes():
     assert SCENARIO_BY_NAME["F01_llm_before_request"].expected == "recover"
 
 
+def test_fault_matrix_scopes_are_fixed_and_hashed():
+    smoke = fault_matrix_plan("smoke")
+    pilot = fault_matrix_plan("pilot")
+    formal = fault_matrix_plan("formal")
+    assert len(smoke) == 14
+    assert len(pilot) == 70
+    assert len(formal) == FAULT_FORMAL_MATRIX_TOTAL == 460
+    assert FAULT_FORMAL_DECLARED_TOTAL == 410
+    assert fault_matrix_sha256(formal) == fault_matrix_sha256(fault_matrix_plan("formal"))
+    with pytest.raises(ValueError, match="smoke, pilot, or formal"):
+        fault_matrix_plan("custom")
+
+
 def test_fault_trial_round_trip_defaults_checkpoint_sequence():
     trial = _trial("F01_llm_before_request")
     assert trial.result["resume_checkpoint_sequence"] is None
@@ -65,6 +84,87 @@ def test_fault_trial_round_trip_defaults_checkpoint_sequence():
     assert restored.scenario == trial.scenario
     assert restored.expected == "recover"
     assert restored.trial == 0
+
+
+def test_existing_fault_trial_validation_includes_injection_identity(tmp_path):
+    scenario = SCENARIO_BY_NAME["F01_llm_before_request"]
+    trial = _trial(scenario.name)
+    path = tmp_path / "trial.json"
+    path.write_text(json.dumps(trial.to_dict()), encoding="utf-8")
+    expected = {
+        "scenario": scenario.name,
+        "trial": trial.trial,
+        "seed": trial.seed,
+        "expected": trial.expected,
+        "trigger_event": scenario.trigger_event,
+        "action": scenario.action,
+    }
+
+    loaded, error = _validate_existing(path, expected)
+    assert loaded is not None
+    assert error is None
+
+    tampered = dict(expected)
+    tampered["action"] = "unexpected-action"
+    loaded, error = _validate_existing(path, tampered)
+    assert loaded is None
+    assert error == "identity mismatch: action"
+
+
+def test_existing_fault_trial_allows_legacy_empty_side_effect_ledger(tmp_path):
+    scenario = SCENARIO_BY_NAME["F01_llm_before_request"]
+    trial = _trial(scenario.name)
+    trial.artifacts["side_effect_ledger"] = "side_effects.jsonl"
+    path = tmp_path / "trial.json"
+    path.write_text(json.dumps(trial.to_dict()), encoding="utf-8")
+    expected = {
+        "scenario": scenario.name,
+        "trial": trial.trial,
+        "seed": trial.seed,
+        "expected": trial.expected,
+        "trigger_event": scenario.trigger_event,
+        "action": scenario.action,
+    }
+
+    loaded, error = _validate_existing(path, expected)
+    assert loaded is not None
+    assert error is None
+
+
+def test_fault_summary_preserves_protocol_block(tmp_path):
+    scenario = SCENARIO_BY_NAME["F01_llm_before_request"]
+    trial = _trial(scenario.name)
+    (tmp_path / "run-manifest.json").write_text(
+        json.dumps(
+            {
+                "plan": [{"scenario": scenario.name, "trial": 0, "seed": 0}],
+                "matrix_sha256": "matrix",
+                "scope": "formal",
+                "protocol_consistent": False,
+                "protocol_warnings": ["protocol totals disagree"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = build_summary(tmp_path, [trial])
+    assert summary["protocol_consistent"] is False
+    assert summary["protocol_warnings"] == ["protocol totals disagree"]
+    assert summary["complete"] is False
+
+
+def test_fault_formal_protocol_mismatch_blocks_worker_execution(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "scripts.run_fault_matrix.run_fault_trial",
+        lambda *args, **kwargs: pytest.fail("formal protocol mismatch must not start a trial"),
+    )
+
+    summary = run_matrix(scope="formal", out_dir=tmp_path, seed=0, timeout_seconds=0.1)
+    assert summary["planned_trials"] == FAULT_FORMAL_MATRIX_TOTAL == 460
+    assert summary["missing_trials"] == 460
+    assert summary["protocol_consistent"] is False
+    assert summary["complete"] is False
+    assert not list(tmp_path.rglob("trial.json"))
 
 
 @pytest.mark.parametrize(

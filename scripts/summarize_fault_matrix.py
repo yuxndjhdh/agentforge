@@ -9,6 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from agentforge.external_tasks import atomic_write_json
 from agentforge.fault_injection import FaultTrial, summarize_fault_trials
 
 
@@ -22,11 +23,55 @@ def load_trials(root: str | Path) -> list[FaultTrial]:
     return records
 
 
+def validate_against_manifest(root: str | Path, trials: list[FaultTrial]) -> dict:
+    manifest_path = Path(root) / "run-manifest.json"
+    if not manifest_path.is_file():
+        return {
+            "present": False,
+            "missing": [],
+            "duplicates": [],
+            "matrix_sha256": None,
+            "planned": len(trials),
+            "protocol_consistent": True,
+            "protocol_warnings": [],
+        }
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict) or not isinstance(raw.get("plan"), list):
+        raise ValueError(f"invalid fault run manifest: {manifest_path}")
+    protocol_consistent = raw.get("protocol_consistent", True)
+    protocol_warnings = raw.get("protocol_warnings", [])
+    if not isinstance(protocol_consistent, bool) or not isinstance(protocol_warnings, list):
+        raise ValueError(f"invalid protocol metadata in fault run manifest: {manifest_path}")
+    expected = [
+        (str(item.get("scenario")), int(item.get("trial", -1)), int(item.get("seed", -1)))
+        for item in raw["plan"]
+    ]
+    actual = [(trial.scenario, trial.trial, trial.seed) for trial in trials]
+    expected_set = set(expected)
+    actual_set = set(actual)
+    duplicates = sorted({key for key in actual if actual.count(key) > 1})
+    missing = sorted(expected_set - actual_set)
+    unexpected = sorted(actual_set - expected_set)
+    if unexpected:
+        duplicates.extend(unexpected)
+    return {
+        "present": True,
+        "missing": missing,
+        "duplicates": duplicates,
+        "matrix_sha256": raw.get("matrix_sha256"),
+        "planned": len(expected),
+        "scope": raw.get("scope"),
+        "protocol_consistent": protocol_consistent,
+        "protocol_warnings": protocol_warnings,
+    }
+
+
 def render_markdown(summary: dict) -> str:
     lines = [
         "# Fault Injection Report",
         "",
-        f"Scope: `{summary['scope']}`; trials: `{summary['trials']}`; valid: `{summary['valid_trials']}`.",
+        f"Scope: `{summary['scope']}`; trials: `{summary['trials']}`; valid: `{summary['valid_trials']}`; complete: `{summary.get('complete', False)}`.",
+        f"Protocol consistent: `{summary.get('protocol_consistent', True)}`.",
         "",
         "This report is generated from `trial.json` files. Smoke and pilot results are not the formal 410-trial matrix.",
         "",
@@ -41,7 +86,34 @@ def render_markdown(summary: dict) -> str:
         lines.append(f"| {name} | {value['trials']} | {value['observed']} | {value['expected']} |")
     lines.extend(["", "## Limitations", ""])
     lines.extend(f"- {item}" for item in summary["limitations"])
+    lines.extend(f"- Protocol: {item}" for item in summary.get("protocol_warnings", []))
+    if summary.get("missing_trials") or summary.get("duplicate_trials"):
+        lines.extend(["", "## Integrity", ""])
+        lines.append(f"- Missing trials: `{summary.get('missing_trials', 0)}`")
+        lines.append(f"- Duplicate/unexpected trials: `{summary.get('duplicate_trials', 0)}`")
     return "\n".join(lines) + "\n"
+
+
+def build_summary(root: str | Path, trials: list[FaultTrial]) -> dict:
+    manifest_check = validate_against_manifest(root, trials)
+    summary = summarize_fault_trials(trials)
+    if manifest_check["present"]:
+        summary["scope"] = manifest_check["scope"] or summary["scope"]
+        summary["matrix_sha256"] = manifest_check["matrix_sha256"]
+        summary["planned_trials"] = manifest_check["planned"]
+        summary["missing_trials"] = len(manifest_check["missing"])
+        summary["duplicate_trials"] = len(manifest_check["duplicates"])
+        summary["protocol_consistent"] = manifest_check["protocol_consistent"]
+        summary["protocol_warnings"] = manifest_check["protocol_warnings"]
+        summary["complete"] = (
+            not manifest_check["missing"]
+            and not manifest_check["duplicates"]
+            and summary["invalid_trials"] == 0
+            and manifest_check["protocol_consistent"]
+        )
+        summary["manifest_missing"] = manifest_check["missing"]
+        summary["manifest_duplicates"] = manifest_check["duplicates"]
+    return summary
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -50,17 +122,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", default="", help="summary JSON path")
     parser.add_argument("--report", default="", help="Markdown report path")
     args = parser.parse_args(argv)
-    summary = summarize_fault_trials(load_trials(args.runs))
+    trials = load_trials(args.runs)
+    summary = build_summary(args.runs, trials)
     rendered = json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     print(rendered)
     if args.out:
-        path = Path(args.out)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(rendered, encoding="utf-8")
+        atomic_write_json(args.out, summary)
     if args.report:
         path = Path(args.report)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(render_markdown(summary), encoding="utf-8")
+        temporary = path.with_name(f".{path.name}.tmp")
+        temporary.write_text(render_markdown(summary), encoding="utf-8")
+        temporary.replace(path)
     return 0
 
 

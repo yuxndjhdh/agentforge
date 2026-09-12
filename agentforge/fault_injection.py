@@ -58,6 +58,25 @@ FAULT_SCENARIOS: tuple[FaultScenario, ...] = (
 )
 
 SCENARIO_BY_NAME = {scenario.name: scenario for scenario in FAULT_SCENARIOS}
+FAULT_SCOPE_TRIALS: dict[str, int] = {"smoke": 1, "pilot": 5}
+FAULT_FORMAL_TRIALS: dict[str, int] = {
+    "F01_llm_before_request": 20,
+    "F02_llm_after_response": 20,
+    "F03_tool_before_start": 20,
+    "F04_tool_completed_persisted": 50,
+    "F05_effect_before_completion": 50,
+    "F06_checkpoint_completed": 50,
+    "F07_jsonl_partial_tail": 20,
+    "F08_checkpoint_corruption": 20,
+    "F09_checkpoint_schema": 20,
+    "F10_sqlite_temporarily_unwritable": 20,
+    "F11_api_process_restart": 50,
+    "F12_docker_unavailable": 20,
+    "F13_run_timeout": 50,
+    "F14_user_cancel": 50,
+}
+FAULT_FORMAL_DECLARED_TOTAL = 410
+FAULT_FORMAL_MATRIX_TOTAL = sum(FAULT_FORMAL_TRIALS.values())
 RESULT_KEYS = (
     "resume_attempted",
     "resume_succeeded",
@@ -70,6 +89,37 @@ RESULT_KEYS = (
     "false_success",
     "resume_checkpoint_sequence",
 )
+
+
+def fault_matrix_plan(scope: str, *, seed: int = 0) -> list[dict[str, Any]]:
+    """Return the immutable trial identity list for a named fault scope."""
+
+    normalized = scope.strip().lower()
+    if normalized in FAULT_SCOPE_TRIALS:
+        counts = {scenario.name: FAULT_SCOPE_TRIALS[normalized] for scenario in FAULT_SCENARIOS}
+    elif normalized == "formal":
+        counts = dict(FAULT_FORMAL_TRIALS)
+    else:
+        raise ValueError("fault scope must be smoke, pilot, or formal")
+    if set(counts) != set(SCENARIO_BY_NAME):
+        raise ValueError("fault formal matrix does not cover the registered scenarios")
+    return [
+        {
+            "scenario": scenario.name,
+            "trial": trial,
+            "seed": seed + trial,
+            "expected": scenario.expected,
+            "trigger_event": scenario.trigger_event,
+            "action": scenario.action,
+        }
+        for scenario in FAULT_SCENARIOS
+        for trial in range(counts[scenario.name])
+    ]
+
+
+def fault_matrix_sha256(plan: list[dict[str, Any]]) -> str:
+    payload = json.dumps(plan, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _json_write(path: Path, value: Any) -> None:
@@ -306,6 +356,8 @@ def _sleep_leaf_main() -> int:
 
 def _worker_executor(scenario: FaultScenario, trial_root: Path, *, resume: bool):
     ledger = SideEffectLedger(trial_root / "side_effects.jsonl")
+    ledger.path.parent.mkdir(parents=True, exist_ok=True)
+    ledger.path.touch(exist_ok=True)
     child: subprocess.Popen | None = None
 
     def execute(ctx: Any) -> str:

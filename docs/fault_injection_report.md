@@ -1,8 +1,9 @@
 # Fault Injection Report
 
-Scope: `pilot`; trials: `70`; valid: `70`.
+Scope: `pilot`; trials: `70`; valid: `70`; complete: `True`.
+Protocol: `p2-formal-460-v2`; formal trials: `460`; consistent: `True`.
 
-This report is generated from `trial.json` files. Smoke and pilot results are not the formal 410-trial matrix.
+This report is generated from `trial.json` files. Smoke and pilot results are not the formal 460-trial matrix.
 
 | Metric | Numerator | Denominator | Rate |
 | --- | ---: | ---: | ---: |
@@ -37,6 +38,6 @@ This report is generated from `trial.json` files. Smoke and pilot results are no
 
 ## Limitations
 
-- Smoke and pilot results are not the formal 410-trial matrix.
+- Smoke and pilot results are not the formal 460-trial matrix.
 - F05 demonstrates the local fail-closed boundary; it cannot prove exactly-once behavior for an arbitrary external service.
 - Docker unavailability is represented by an explicit deterministic fail-closed probe; no daemon is disrupted by this runner.

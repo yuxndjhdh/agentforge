@@ -8,6 +8,7 @@ import pytest
 from agentforge.fault_injection import (
     FAULT_FORMAL_DECLARED_TOTAL,
     FAULT_FORMAL_MATRIX_TOTAL,
+    FAULT_PROTOCOL_VERSION,
     FAULT_SCENARIOS,
     FAULT_SUITE_VERSION,
     SCENARIO_BY_NAME,
@@ -19,7 +20,7 @@ from agentforge.fault_injection import (
     fault_matrix_sha256,
     summarize_fault_trials,
 )
-from scripts.run_fault_matrix import _validate_existing, run_matrix
+from scripts.run_fault_matrix import _git_metadata, _validate_existing, run_matrix
 from scripts.summarize_fault_matrix import build_summary
 
 
@@ -68,8 +69,9 @@ def test_fault_matrix_scopes_are_fixed_and_hashed():
     formal = fault_matrix_plan("formal")
     assert len(smoke) == 14
     assert len(pilot) == 70
-    assert len(formal) == FAULT_FORMAL_MATRIX_TOTAL == 460
-    assert FAULT_FORMAL_DECLARED_TOTAL == 410
+    assert len(formal) == FAULT_FORMAL_MATRIX_TOTAL == FAULT_FORMAL_DECLARED_TOTAL == 460
+    assert FAULT_PROTOCOL_VERSION == "p2-formal-460-v2"
+    assert FAULT_SUITE_VERSION == "fault-v2"
     assert fault_matrix_sha256(formal) == fault_matrix_sha256(fault_matrix_plan("formal"))
     with pytest.raises(ValueError, match="smoke, pilot, or formal"):
         fault_matrix_plan("custom")
@@ -153,18 +155,40 @@ def test_fault_summary_preserves_protocol_block(tmp_path):
     assert summary["complete"] is False
 
 
-def test_fault_formal_protocol_mismatch_blocks_worker_execution(tmp_path, monkeypatch):
+def test_fault_manifest_carries_v2_protocol_metadata(tmp_path, monkeypatch):
+    def fake_run_fault_trial(name, *, trial, seed, out_dir, timeout_seconds):
+        del out_dir, timeout_seconds
+        scenario = SCENARIO_BY_NAME[name]
+        return FaultTrial.create(
+            scenario,
+            trial=trial,
+            seed=seed,
+            injection={"trigger_event": scenario.trigger_event, "action": scenario.action, "observed": True},
+            result=_result(scenario),
+            artifacts={},
+        )
+
     monkeypatch.setattr(
         "scripts.run_fault_matrix.run_fault_trial",
-        lambda *args, **kwargs: pytest.fail("formal protocol mismatch must not start a trial"),
+        fake_run_fault_trial,
     )
 
-    summary = run_matrix(scope="formal", out_dir=tmp_path, seed=0, timeout_seconds=0.1)
-    assert summary["planned_trials"] == FAULT_FORMAL_MATRIX_TOTAL == 460
-    assert summary["missing_trials"] == 460
-    assert summary["protocol_consistent"] is False
-    assert summary["complete"] is False
+    summary = run_matrix(scope="smoke", out_dir=tmp_path, seed=0, timeout_seconds=0.1)
+    manifest = json.loads((tmp_path / "run-manifest.json").read_text(encoding="utf-8"))
+    assert summary["protocol_consistent"] is True
+    assert manifest["protocol_version"] == FAULT_PROTOCOL_VERSION
+    assert manifest["formal_trial_total"] == FAULT_FORMAL_DECLARED_TOTAL == 460
+    assert manifest["matrix_sha256"] == fault_matrix_sha256(fault_matrix_plan("smoke"))
     assert not list(tmp_path.rglob("trial.json"))
+
+
+def test_fault_matrix_metadata_degrades_without_git(monkeypatch):
+    def missing_git(*args, **kwargs):
+        del args, kwargs
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr("scripts.run_fault_matrix.subprocess.run", missing_git)
+    assert _git_metadata() == (None, None)
 
 
 @pytest.mark.parametrize(

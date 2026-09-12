@@ -10,7 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agentforge.external_tasks import atomic_write_json
-from agentforge.fault_injection import FaultTrial, summarize_fault_trials
+from agentforge.fault_injection import FAULT_FORMAL_DECLARED_TOTAL, FaultTrial, summarize_fault_trials
 
 
 def load_trials(root: str | Path) -> list[FaultTrial]:
@@ -34,13 +34,22 @@ def validate_against_manifest(root: str | Path, trials: list[FaultTrial]) -> dic
             "planned": len(trials),
             "protocol_consistent": True,
             "protocol_warnings": [],
+            "protocol_version": None,
+            "formal_trial_total": FAULT_FORMAL_DECLARED_TOTAL,
         }
     raw = json.loads(manifest_path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict) or not isinstance(raw.get("plan"), list):
         raise ValueError(f"invalid fault run manifest: {manifest_path}")
     protocol_consistent = raw.get("protocol_consistent", True)
     protocol_warnings = raw.get("protocol_warnings", [])
-    if not isinstance(protocol_consistent, bool) or not isinstance(protocol_warnings, list):
+    protocol_version = raw.get("protocol_version", raw.get("suite_version", "unknown"))
+    formal_trial_total = raw.get("formal_trial_total", FAULT_FORMAL_DECLARED_TOTAL)
+    if (
+        not isinstance(protocol_consistent, bool)
+        or not isinstance(protocol_warnings, list)
+        or not isinstance(protocol_version, str)
+        or not isinstance(formal_trial_total, int)
+    ):
         raise ValueError(f"invalid protocol metadata in fault run manifest: {manifest_path}")
     expected = [
         (str(item.get("scenario")), int(item.get("trial", -1)), int(item.get("seed", -1)))
@@ -63,6 +72,8 @@ def validate_against_manifest(root: str | Path, trials: list[FaultTrial]) -> dic
         "scope": raw.get("scope"),
         "protocol_consistent": protocol_consistent,
         "protocol_warnings": protocol_warnings,
+        "protocol_version": protocol_version,
+        "formal_trial_total": formal_trial_total,
     }
 
 
@@ -71,9 +82,10 @@ def render_markdown(summary: dict) -> str:
         "# Fault Injection Report",
         "",
         f"Scope: `{summary['scope']}`; trials: `{summary['trials']}`; valid: `{summary['valid_trials']}`; complete: `{summary.get('complete', False)}`.",
-        f"Protocol consistent: `{summary.get('protocol_consistent', True)}`.",
+        f"Protocol: `{summary.get('protocol_version', 'unknown')}`; formal trials: `{summary.get('formal_trial_total', FAULT_FORMAL_DECLARED_TOTAL)}`; consistent: `{summary.get('protocol_consistent', True)}`.",
+        f"Platforms: `{', '.join(summary.get('platforms', [])) or 'unknown'}`; multi-platform evidence: `{summary.get('multi_platform_evidence', False)}`.",
         "",
-        "This report is generated from `trial.json` files. Smoke and pilot results are not the formal 410-trial matrix.",
+        f"This report is generated from `trial.json` files. Smoke and pilot results are not the formal {summary.get('formal_trial_total', FAULT_FORMAL_DECLARED_TOTAL)}-trial matrix.",
         "",
         "| Metric | Numerator | Denominator | Rate |",
         "| --- | ---: | ---: | ---: |",
@@ -105,6 +117,8 @@ def build_summary(root: str | Path, trials: list[FaultTrial]) -> dict:
         summary["duplicate_trials"] = len(manifest_check["duplicates"])
         summary["protocol_consistent"] = manifest_check["protocol_consistent"]
         summary["protocol_warnings"] = manifest_check["protocol_warnings"]
+        summary["protocol_version"] = manifest_check["protocol_version"]
+        summary["formal_trial_total"] = manifest_check["formal_trial_total"]
         summary["complete"] = (
             not manifest_check["missing"]
             and not manifest_check["duplicates"]

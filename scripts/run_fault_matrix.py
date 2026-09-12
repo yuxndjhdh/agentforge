@@ -17,6 +17,7 @@ from agentforge.external_tasks import atomic_write_json, dependency_lock_sha256
 from agentforge.fault_injection import (
     FAULT_FORMAL_DECLARED_TOTAL,
     FAULT_FORMAL_MATRIX_TOTAL,
+    FAULT_PROTOCOL_VERSION,
     FAULT_SCENARIOS,
     FAULT_SUITE_VERSION,
     FaultTrial,
@@ -30,12 +31,15 @@ from agentforge.sandbox import Sandbox
 
 def _git_metadata() -> tuple[str | None, bool | None]:
     root = Path(__file__).resolve().parents[1]
-    commit_result = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=False
-    )
-    dirty_result = subprocess.run(
-        ["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True, check=False
-    )
+    try:
+        commit_result = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=root, capture_output=True, text=True, check=False
+        )
+        dirty_result = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True, check=False
+        )
+    except OSError:
+        return None, None
     return (
         commit_result.stdout.strip() if commit_result.returncode == 0 else None,
         bool(dirty_result.stdout.strip()) if dirty_result.returncode == 0 else None,
@@ -134,6 +138,8 @@ def run_matrix(
     manifest = {
         "schema_version": 1,
         "suite_version": FAULT_SUITE_VERSION,
+        "protocol_version": FAULT_PROTOCOL_VERSION,
+        "formal_trial_total": FAULT_FORMAL_DECLARED_TOTAL,
         "scope": scope,
         "seed": seed,
         "plan": plan,
@@ -207,6 +213,8 @@ def run_matrix(
             ),
             "protocol_consistent": manifest["protocol_consistent"],
             "protocol_warnings": manifest["protocol_warnings"],
+            "protocol_version": manifest["protocol_version"],
+            "formal_trial_total": manifest["formal_trial_total"],
         }
     )
     summary["complete"] = bool(summary["matrix_complete"] and summary["protocol_consistent"])

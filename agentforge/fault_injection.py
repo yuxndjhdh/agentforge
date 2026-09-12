@@ -2,12 +2,14 @@
 
 The runner is intentionally deterministic and conservative.  It provides a
 small, reviewable controller/worker harness for smoke and pilot runs; it does
-not claim that a smoke run is the formal 410-trial reliability matrix.
+not claim that a smoke run is the formal 460-trial reliability matrix.
 """
 
 from __future__ import annotations
 
 import argparse
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -27,7 +29,8 @@ from .sandbox import _terminate_process_tree
 from .trace import RunTrace
 
 FAULT_SCHEMA_VERSION = 1
-FAULT_SUITE_VERSION = "fault-v1"
+FAULT_SUITE_VERSION = "fault-v2"
+FAULT_PROTOCOL_VERSION = "p2-formal-460-v2"
 
 
 @dataclass(frozen=True)
@@ -75,8 +78,10 @@ FAULT_FORMAL_TRIALS: dict[str, int] = {
     "F13_run_timeout": 50,
     "F14_user_cancel": 50,
 }
-FAULT_FORMAL_DECLARED_TOTAL = 410
+FAULT_FORMAL_DECLARED_TOTAL = 460
 FAULT_FORMAL_MATRIX_TOTAL = sum(FAULT_FORMAL_TRIALS.values())
+if FAULT_FORMAL_MATRIX_TOTAL != FAULT_FORMAL_DECLARED_TOTAL:
+    raise RuntimeError("formal fault matrix counts do not match the declared protocol total")
 RESULT_KEYS = (
     "resume_attempted",
     "resume_succeeded",
@@ -544,14 +549,88 @@ def _events(trial_root: Path, run_id: str) -> list[dict[str, Any]]:
         store.close()
 
 
+_CHILD_SUBREAPER_ENABLED = False
+
+
+def _enable_child_subreaper() -> bool:
+    """Make Linux orphaned worker descendants reparent to this controller."""
+
+    global _CHILD_SUBREAPER_ENABLED
+    if _CHILD_SUBREAPER_ENABLED:
+        return True
+    if sys.platform != "linux":
+        return False
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        prctl = libc.prctl
+        prctl.argtypes = [
+            ctypes.c_int,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+        ]
+        prctl.restype = ctypes.c_int
+        if prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
+            return False
+    except (AttributeError, OSError, TypeError):
+        return False
+    _CHILD_SUBREAPER_ENABLED = True
+    return True
+
+
+def _linux_process_state(pid: int) -> str | None:
+    if sys.platform != "linux":
+        return None
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+    except (OSError, UnicodeError):
+        return None
+    _, separator, remainder = stat.rpartition(")")
+    if not separator:
+        return None
+    fields = remainder.split()
+    return fields[0] if fields else None
+
+
 def _pid_exists(pid: int) -> bool:
     if pid <= 0:
+        return False
+    if _linux_process_state(pid) == "Z":
         return False
     try:
         os.kill(pid, 0)
     except (OSError, ProcessLookupError):
         return False
     return True
+
+
+def _reap_process_ids(pids: Iterable[int], *, timeout: float = 2.0) -> None:
+    """Reap descendant PIDs adopted by this controller on POSIX systems."""
+
+    if os.name == "nt" or not hasattr(os, "waitpid"):
+        return
+    pending = list(dict.fromkeys(int(pid) for pid in pids if int(pid) > 0))
+    wait_nohang = getattr(os, "WNOHANG", 1)
+    deadline = time.monotonic() + timeout
+    while pending and time.monotonic() < deadline:
+        remaining: list[int] = []
+        for pid in pending:
+            try:
+                waited, _ = os.waitpid(pid, wait_nohang)
+            except ChildProcessError:
+                continue
+            except OSError as exc:
+                if exc.errno in {errno.ECHILD, errno.ESRCH}:
+                    continue
+                remaining.append(pid)
+                continue
+            if waited == 0:
+                remaining.append(pid)
+        if not remaining:
+            return
+        pending = remaining
+        time.sleep(0.02)
 
 
 def _terminate_process_ids(pids: Iterable[int]) -> None:
@@ -578,9 +657,11 @@ def _terminate_process_ids(pids: Iterable[int]) -> None:
                 os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
             except (OSError, ProcessLookupError):
                 pass
+    _reap_process_ids(unique)
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline and any(_pid_exists(pid) for pid in unique):
         time.sleep(0.02)
+    _reap_process_ids(unique)
 
 
 def _corrupt_checkpoint(trial_root: Path, *, schema: bool) -> None:
@@ -735,6 +816,7 @@ def run_fault_trial(
     """Run one controller/worker trial and always write ``trial.json``."""
 
     selected = SCENARIO_BY_NAME[scenario] if isinstance(scenario, str) else scenario
+    _enable_child_subreaper()
     trial_root = Path(out_dir).resolve() / selected.name / str(trial)
     trial_root.mkdir(parents=True, exist_ok=True)
     run_id = f"fault-{selected.name}-{trial}-{seed}"
@@ -918,7 +1000,7 @@ def summarize_fault_trials(trials: Iterable[FaultTrial]) -> dict[str, Any]:
             "fail_closed_correctness_rate": 1.0,
         },
         "limitations": [
-            "Smoke and pilot results are not the formal 410-trial matrix.",
+            "Smoke and pilot results are not the formal 460-trial matrix.",
             "F05 demonstrates the local fail-closed boundary; it cannot prove exactly-once behavior for an arbitrary external service.",
             "Docker unavailability is represented by an explicit deterministic fail-closed probe; no daemon is disrupted by this runner.",
         ],

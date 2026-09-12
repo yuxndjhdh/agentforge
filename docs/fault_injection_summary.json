@@ -1,10 +1,16 @@
 {
+  "complete": true,
+  "duplicate_trials": 0,
+  "formal_trial_total": 460,
   "invalid_trials": 0,
   "limitations": [
-    "Smoke and pilot results are not the formal 410-trial matrix.",
+    "Smoke and pilot results are not the formal 460-trial matrix.",
     "F05 demonstrates the local fail-closed boundary; it cannot prove exactly-once behavior for an arbitrary external service.",
     "Docker unavailability is represented by an explicit deterministic fail-closed probe; no daemon is disrupted by this runner."
   ],
+  "manifest_duplicates": [],
+  "manifest_missing": [],
+  "matrix_sha256": "d87c24c50ebfdb0fc6b873ca9d80250b2dbfc9f12cb035e640a11aa114e79179",
   "metrics": {
     "cancellation_reclaim_rate": {
       "denominator": 5,
@@ -52,13 +58,18 @@
       "rate": 1.0
     }
   },
+  "missing_trials": 0,
   "multi_platform_evidence": false,
+  "planned_trials": 70,
   "platforms": [
     "Windows-11-10.0.26200-SP0"
   ],
+  "protocol_consistent": true,
+  "protocol_version": "p2-formal-460-v2",
+  "protocol_warnings": [],
   "recovery_latency_seconds": {
-    "p50": 0.5113616000016918,
-    "p95": 0.6825642999901902
+    "p50": 0.5652512000233401,
+    "p95": 0.6352593000046909
   },
   "scenarios": {
     "F01_llm_before_request": {
@@ -134,7 +145,7 @@
   },
   "schema_version": 1,
   "scope": "pilot",
-  "suite_version": "fault-v1",
+  "suite_version": "fault-v2",
   "thresholds": {
     "cancellation_reclaim_rate": 0.99,
     "duplicate_side_effect_rate": 0.0,

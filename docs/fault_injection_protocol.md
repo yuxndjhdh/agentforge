@@ -1,5 +1,7 @@
 # Fault Injection Protocol
 
+Protocol version: `p2-formal-460-v2`; suite version: `fault-v2`.
+
 P2 uses an independent controller and worker process. The controller creates a
 trial directory, starts `python -m agentforge.fault_injection --worker`, waits
 for a persisted lifecycle barrier, injects the selected action, optionally
@@ -32,7 +34,21 @@ service; automatic replay is rejected.
 
 `scripts/run_fault_matrix.py --trials 1` is the P2-A smoke path. `--trials 5`
 is the P2-B pilot path (70 trials across all scenarios). The formal matrix is
-410 trials and is not claimed by this repository change. The runner does not
+The formal matrix contains 460 trials and is not claimed by this repository
+change. Its per-scenario counts are:
+
+| Scenario | Formal trials |
+| --- | ---: |
+| F01-F03 | 20 each |
+| F04-F06 | 50 each |
+| F07-F10 | 20 each |
+| F11 | 50 |
+| F12 | 20 |
+| F13-F14 | 50 each |
+| Total | 460 |
+
+The runner records the protocol version and matrix SHA-256 in each run
+manifest. The runner does not
 disrupt a Docker daemon; the container scenario records a deterministic
 fail-closed probe and must be repeated on explicit Linux/Windows CI hosts for
 platform evidence.

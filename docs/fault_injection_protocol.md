@@ -33,9 +33,9 @@ service; automatic replay is rejected.
 ## Scope
 
 `scripts/run_fault_matrix.py --trials 1` is the P2-A smoke path. `--trials 5`
-is the P2-B pilot path (70 trials across all scenarios). The formal matrix is
-The formal matrix contains 460 trials and is not claimed by this repository
-change. Its per-scenario counts are:
+is the P2-B pilot path (70 trials across all scenarios). The formal matrix
+contains 460 trials and is not claimed by this repository change. Its
+per-scenario counts are:
 
 | Scenario | Formal trials |
 | --- | ---: |

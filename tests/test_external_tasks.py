@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from agentforge.external_tasks import (
     ExternalDataset,
     ExternalTaskError,
+    RepositoryMaterializer,
     audit_external_dataset,
     hash_directory,
     sha256_bytes,
@@ -76,6 +78,72 @@ def test_external_dataset_loads_and_hashes_verifier(tmp_path):
     prepared = prepare_dataset(path, frozen)
     assert prepared["tasks"] == 1
     assert ExternalDataset.load(frozen).tasks[0].verifier.root.is_dir()
+
+
+def test_external_dataset_lock_rejects_tampering(tmp_path):
+    task = _manifest_task(tmp_path, "repo-a__issue-1", "validation", "file:///repo-a")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"dataset_version": "external-test-1", "tasks": [task]}), encoding="utf-8")
+    frozen = tmp_path / "frozen"
+    prepare_dataset(manifest, frozen)
+
+    lock = json.loads((frozen / "dataset.lock.json").read_text(encoding="utf-8"))
+    lock["manifest_sha256"] = "0" * 64
+    (frozen / "dataset.lock.json").write_text(json.dumps(lock), encoding="utf-8")
+    with pytest.raises(ExternalTaskError, match="dataset lock mismatch"):
+        ExternalDataset.load(frozen)
+
+
+def test_external_audit_runs_base_and_reference_verifiers(tmp_path):
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    subprocess.run(["git", "init"], cwd=repository, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.name", "AgentForge Test"], cwd=repository, check=True)
+    (repository / "src").mkdir()
+    (repository / "src" / "value.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "src/value.txt"], cwd=repository, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "base"], cwd=repository, check=True, capture_output=True)
+    base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
+    (repository / "src" / "value.txt").write_text("fixed\n", encoding="utf-8")
+    subprocess.run(["git", "add", "src/value.txt"], cwd=repository, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "reference"], cwd=repository, check=True, capture_output=True)
+    reference = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repository, text=True).strip()
+    patch = subprocess.check_output(["git", "diff", base, reference], cwd=repository)
+
+    task = _manifest_task(tmp_path, "repo-a__issue-1", "validation", repository.as_uri())
+    verifier = tmp_path / "verifier" / "repo-a__issue-1"
+    (verifier / "check.py").write_text(
+        "from pathlib import Path\n"
+        "raise SystemExit(0 if Path('src/value.txt').read_text() == 'fixed\\n' else 1)\n",
+        encoding="utf-8",
+    )
+    task["verifier"]["path"] = "verifier/repo-a__issue-1"
+    task["verifier"]["commands"] = [[sys.executable, "{verifier_root}/check.py"]]
+    task["verifier"]["bundle_sha256"] = hash_directory(verifier)
+    task["repository"]["base_commit"] = base
+    task["reference"] = {
+        "patch_sha256": sha256_bytes(patch),
+        "expected_changed_paths": ["src/value.txt"],
+        "reference_commit": reference,
+    }
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"dataset_version": "external-test-1", "tasks": [task]}), encoding="utf-8")
+    dataset = ExternalDataset.load(manifest)
+    report = audit_external_dataset(
+        dataset,
+        check_repositories=True,
+        execute_repository_checks=True,
+        require_base_reference=True,
+        materializer=RepositoryMaterializer(tmp_path / "cache"),
+    )
+    item = report["tasks"][0]
+    assert report["errors"] == []
+    assert item["base_checked"] is True
+    assert item["base_passed"] is False
+    assert item["reference_checked"] is True
+    assert item["reference_passed"] is True
+    assert item["reference_changed_paths"] == ["src/value.txt"]
 
 
 def test_external_dataset_rejects_repository_split_leakage(tmp_path):

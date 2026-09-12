@@ -16,6 +16,7 @@ from __future__ import annotations
 import fnmatch
 import hashlib
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -23,11 +24,13 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 from urllib.parse import urlparse
 
 EXTERNAL_SCHEMA_VERSION = 1
+DATASET_LOCK_SCHEMA_VERSION = 1
 SUPPORTED_SPLITS = frozenset({"validation", "holdout"})
 SHA256_RE = r"^[0-9a-f]{64}$"
 COMMIT_RE = r"^[0-9a-f]{40}$"
@@ -51,6 +54,20 @@ def sha256_file(path: str | Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def atomic_write_json(path: str | Path, value: Any) -> Path:
+    """Write JSON with a durable same-directory replacement."""
+
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.tmp")
+    temporary.write_text(
+        json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, target)
+    return target
 
 
 def hash_directory(root: str | Path) -> str:
@@ -480,6 +497,9 @@ class ExternalDataset:
     manifest_sha256: str
     dataset_sha256: str
     manifest_path: Path
+    all_tasks: tuple[ExternalTaskSpec, ...] | None = None
+    lock_path: Path | None = None
+    lock_verified: bool = False
 
     @classmethod
     def load(cls, path: str | Path, *, split: str | None = None) -> "ExternalDataset":
@@ -501,6 +521,13 @@ class ExternalDataset:
         tasks = tuple(ExternalTaskSpec.from_manifest(item, dataset_root=root) for item in raw_tasks)
         if any(task.dataset_version != version for task in tasks):
             raise ExternalTaskError("task dataset_version does not match the dataset manifest")
+        lock_path = root / "dataset.lock.json"
+        lock = None
+        if lock_path.is_file():
+            try:
+                lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ExternalTaskError(f"cannot read dataset lock: {lock_path}") from exc
         dataset = cls(
             root=root,
             version=version,
@@ -508,6 +535,9 @@ class ExternalDataset:
             manifest_sha256=sha256_bytes(_canonical_json(raw)),
             dataset_sha256="",
             manifest_path=manifest_path,
+            all_tasks=tasks,
+            lock_path=lock_path if lock_path.is_file() else None,
+            lock_verified=False,
         )
         dataset.validate()
         selected = tuple(task for task in tasks if split is None or task.split == split)
@@ -515,7 +545,7 @@ class ExternalDataset:
             raise ExternalTaskError(f"unsupported dataset split: {split}")
         if not selected:
             raise ExternalTaskError(f"dataset split is empty: {split}")
-        return cls(
+        final_dataset = cls(
             root=root,
             version=version,
             tasks=selected,
@@ -529,21 +559,42 @@ class ExternalDataset:
                 )
             ),
             manifest_path=manifest_path,
+            all_tasks=tasks,
+            lock_path=lock_path if lock_path.is_file() else None,
+            lock_verified=False,
         )
+        if lock is not None:
+            validate_dataset_lock(final_dataset, lock)
+            return cls(
+                root=final_dataset.root,
+                version=final_dataset.version,
+                tasks=final_dataset.tasks,
+                manifest_sha256=final_dataset.manifest_sha256,
+                dataset_sha256=final_dataset.dataset_sha256,
+                manifest_path=final_dataset.manifest_path,
+                all_tasks=final_dataset.all_tasks,
+                lock_path=final_dataset.lock_path,
+                lock_verified=True,
+            )
+        return final_dataset
 
     def validate(self) -> None:
         ids: set[str] = set()
-        repositories: dict[str, str] = {}
-        for task in self.tasks:
+        repositories: dict[str, tuple[str, str]] = {}
+        for task in self.all_tasks or self.tasks:
             if task.id in ids:
                 raise ExternalTaskError(f"duplicate task id: {task.id}")
             ids.add(task.id)
             previous = repositories.get(task.repository_key)
-            if previous is not None and previous != task.split:
+            if previous is not None and previous[0] != task.split:
                 raise ExternalTaskError(
-                    f"repository crosses validation/holdout split: {task.repository_url} ({previous}, {task.split})"
+                    f"repository crosses validation/holdout split: {task.repository_url} ({previous[0]}, {task.split})"
                 )
-            repositories[task.repository_key] = task.split
+            if previous is not None and previous[1] != task.base_commit:
+                raise ExternalTaskError(
+                    f"repository has multiple base commits: {task.repository_url} ({previous[1]}, {task.base_commit})"
+                )
+            repositories[task.repository_key] = (task.split, task.base_commit)
             task.verifier.validate()
 
     def by_split(self, split: str) -> tuple[ExternalTaskSpec, ...]:
@@ -552,7 +603,98 @@ class ExternalDataset:
         return tuple(task for task in self.tasks if task.split == split)
 
     def to_manifest_dict(self) -> dict[str, Any]:
-        return {"schema_version": EXTERNAL_SCHEMA_VERSION, "dataset_version": self.version, "tasks": [task.to_manifest_dict() for task in self.tasks]}
+        tasks = self.all_tasks or self.tasks
+        return {
+            "schema_version": EXTERNAL_SCHEMA_VERSION,
+            "dataset_version": self.version,
+            "tasks": [task.to_manifest_dict() for task in tasks],
+        }
+
+    @property
+    def task_count(self) -> int:
+        return len(self.all_tasks or self.tasks)
+
+    def build_lock(self, *, generated_at: str | None = None) -> dict[str, Any]:
+        return build_dataset_lock(self, generated_at=generated_at)
+
+    def validate_lock(self, lock: dict[str, Any] | None = None) -> None:
+        source = lock
+        if source is None:
+            if self.lock_path is None or not self.lock_path.is_file():
+                raise ExternalTaskError(f"dataset lock does not exist: {self.root / 'dataset.lock.json'}")
+            try:
+                source = json.loads(self.lock_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ExternalTaskError(f"cannot read dataset lock: {self.root / 'dataset.lock.json'}") from exc
+        validate_dataset_lock(self, source)
+
+
+def build_dataset_lock(dataset: ExternalDataset, *, generated_at: str | None = None) -> dict[str, Any]:
+    """Build the lock projection used by formal external experiments."""
+
+    tasks = dataset.all_tasks or dataset.tasks
+    repositories: dict[str, str] = {}
+    for task in tasks:
+        repositories[task.repository_url] = task.base_commit
+    return {
+        "schema_version": DATASET_LOCK_SCHEMA_VERSION,
+        "dataset_version": dataset.version,
+        "manifest_sha256": dataset.manifest_sha256,
+        "dataset_sha256": dataset.dataset_sha256,
+        "task_count": len(tasks),
+        "validation_count": sum(task.split == "validation" for task in tasks),
+        "holdout_count": sum(task.split == "holdout" for task in tasks),
+        "repositories": dict(sorted(repositories.items())),
+        "verifier_bundles": {
+            task.id: task.verifier.bundle_sha256 for task in sorted(tasks, key=lambda item: item.id)
+        },
+        "generated_at": generated_at
+        or datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def validate_dataset_lock(dataset: ExternalDataset, lock: Any) -> None:
+    """Reject a lock when any manifest, split, repository or verifier changed."""
+
+    if not isinstance(lock, dict):
+        raise ExternalTaskError("dataset lock must be an object")
+    expected = build_dataset_lock(dataset, generated_at=str(lock.get("generated_at", "")))
+    required = (
+        "schema_version",
+        "dataset_version",
+        "manifest_sha256",
+        "task_count",
+        "validation_count",
+        "holdout_count",
+        "repositories",
+        "verifier_bundles",
+        "generated_at",
+    )
+    missing = [key for key in required if key not in lock]
+    if missing:
+        raise ExternalTaskError(f"dataset lock is missing: {', '.join(missing)}")
+    if not isinstance(lock.get("generated_at"), str) or not lock["generated_at"].strip():
+        raise ExternalTaskError("dataset lock generated_at must be a non-empty string")
+    mismatches: list[str] = []
+    for key in required:
+        if lock.get(key) != expected.get(key):
+            mismatches.append(key)
+    if "dataset_sha256" in lock and lock.get("dataset_sha256") != expected["dataset_sha256"]:
+        mismatches.append("dataset_sha256")
+    if mismatches:
+        raise ExternalTaskError(f"dataset lock mismatch: {', '.join(sorted(set(mismatches)))}")
+
+
+def write_dataset_lock(
+    dataset: ExternalDataset,
+    path: str | Path | None = None,
+    *,
+    generated_at: str | None = None,
+) -> Path:
+    """Persist a lock after validating the complete manifest projection."""
+
+    target = Path(path) if path is not None else dataset.root / "dataset.lock.json"
+    return atomic_write_json(target, build_dataset_lock(dataset, generated_at=generated_at))
 
 
 @dataclass
@@ -562,16 +704,25 @@ class RepositoryMaterializer:
     cache_root: Path = Path("runs/external-benchmark/cache")
     git_timeout_seconds: float = 300.0
 
-    def materialize(self, task: ExternalTaskSpec, *, destination: str | Path | None = None) -> Path:
+    def materialize(
+        self,
+        task: ExternalTaskSpec,
+        *,
+        destination: str | Path | None = None,
+        commit: str | None = None,
+    ) -> Path:
+        revision = (commit or task.base_commit).lower()
+        if not _is_commit(revision):
+            raise ExternalTaskError(f"repository revision must be a 40-char lowercase SHA: {revision}")
         cache_root = self.cache_root.resolve()
         cache_root.mkdir(parents=True, exist_ok=True)
-        key = sha256_bytes(f"{task.repository_url}\0{task.base_commit}".encode("utf-8"))
+        key = sha256_bytes(f"{task.repository_url}\0{revision}".encode("utf-8"))
         cached = cache_root / key
         if not cached.is_dir():
             staging = Path(tempfile.mkdtemp(prefix=f"{key}-", dir=cache_root))
             try:
                 self._clone(task.repository_url, staging)
-                self._git_checkout(staging, task.base_commit)
+                self._git_checkout(staging, revision)
                 staging.replace(cached)
             except Exception:
                 shutil.rmtree(staging, ignore_errors=True)
@@ -620,7 +771,7 @@ class RepositoryMaterializer:
             check=False,
         )
         if head.returncode != 0 or head.stdout.strip().lower() != commit:
-            raise ExternalTaskError(f"materialized repository is not at base commit {commit}")
+            raise ExternalTaskError(f"materialized repository is not at commit {commit}")
 
 
 def workspace_files(root: str | Path) -> set[str]:
@@ -643,12 +794,22 @@ def audit_external_dataset(
     *,
     agent_workspace: str | Path | None = None,
     check_repositories: bool = False,
+    execute_repository_checks: bool = False,
+    require_base_reference: bool = False,
+    materializer: RepositoryMaterializer | None = None,
 ) -> dict[str, Any]:
-    """Return a machine-readable audit without silently repairing manifests."""
+    """Return a machine-readable audit without silently repairing manifests.
+
+    ``check_repositories`` preserves the historical dry-run warning used by
+    callers that only want manifest checks.  The CLI passes
+    ``execute_repository_checks=True`` to perform the clone and
+    base/reference verifier probes.
+    """
 
     errors: list[str] = []
     warnings: list[str] = []
     tasks: list[dict[str, Any]] = []
+    repository_materializer = materializer or RepositoryMaterializer()
     for task in dataset.tasks:
         item: dict[str, Any] = {
             "id": task.id,
@@ -659,6 +820,10 @@ def audit_external_dataset(
             "local_fixture": task.is_local_fixture,
             "base_checked": False,
             "reference_checked": False,
+            "base_passed": None,
+            "reference_passed": None,
+            "reference_changed_paths": [],
+            "reference_patch_sha256": None,
             "errors": [],
         }
         if task.is_local_fixture:
@@ -668,7 +833,63 @@ def audit_external_dataset(
         except ExternalTaskError as exc:
             item["errors"].append(str(exc))
         if check_repositories:
-            warnings.append(f"{task.id}: repository clone checks are not run by default in this audit")
+            if execute_repository_checks:
+                try:
+                    base_workspace = repository_materializer.materialize(task)
+                    try:
+                        base_result = task.verifier.run(base_workspace, task_id=task.id)
+                        item["base_checked"] = True
+                        item["base_passed"] = base_result.passed
+                        item["base_verifier"] = base_result.to_dict()
+                        if base_result.passed:
+                            item["errors"].append("base verifier unexpectedly passed")
+
+                        reference_workspace, changed_paths, patch_hash = _prepare_reference_workspace(
+                            task, repository_materializer
+                        )
+                        if reference_workspace is None:
+                            message = "reference commit or patch was not supplied"
+                            if require_base_reference:
+                                item["errors"].append(message)
+                            else:
+                                warnings.append(f"{task.id}: {message}")
+                        else:
+                            try:
+                                reference_result = task.verifier.run(reference_workspace, task_id=task.id)
+                                item["reference_checked"] = True
+                                item["reference_passed"] = reference_result.passed
+                                item["reference_verifier"] = reference_result.to_dict()
+                                item["reference_changed_paths"] = changed_paths
+                                item["reference_patch_sha256"] = patch_hash
+                                if not reference_result.passed:
+                                    item["errors"].append("reference verifier failed")
+                                allowed, violations = task.changed_paths_allowed(changed_paths)
+                                if not allowed:
+                                    item["errors"].append(
+                                        f"reference changed protected/disallowed paths: {', '.join(violations)}"
+                                    )
+                                expected = task.reference.get("expected_changed_paths", [])
+                                missing_expected = [
+                                    str(path)
+                                    for path in expected
+                                    if not any(_path_matches(changed, str(path)) for changed in changed_paths)
+                                ]
+                                if missing_expected:
+                                    item["errors"].append(
+                                        f"reference is missing expected paths: {', '.join(missing_expected)}"
+                                    )
+                                if patch_hash != task.reference.get("patch_sha256"):
+                                    item["errors"].append("reference patch hash does not match manifest")
+                            finally:
+                                shutil.rmtree(reference_workspace, ignore_errors=True)
+                    finally:
+                        shutil.rmtree(base_workspace, ignore_errors=True)
+                except Exception as exc:  # audit must retain per-task failure evidence
+                    item["errors"].append(f"repository audit failed: {type(exc).__name__}: {exc}")
+            else:
+                warnings.append(f"{task.id}: repository clone checks are not run by default in this audit")
+        elif require_base_reference:
+            item["errors"].append("base/reference repository checks were not requested")
         if item["errors"]:
             errors.extend(f"{task.id}: {message}" for message in item["errors"])
         tasks.append(item)
@@ -685,8 +906,18 @@ def audit_external_dataset(
             "valid_tasks": sum(not item["errors"] for item in tasks),
             "errors": len(errors),
             "warnings": len(warnings),
-            "base_fail_reference_pass": "not_checked",
-            "external_validity_evidence": False,
+            "base_fail_reference_pass": (
+                f"{sum(item['base_passed'] is False and item['reference_passed'] is True for item in tasks)}/{len(tasks)}"
+                if execute_repository_checks
+                else "not_checked"
+            ),
+            "external_validity_evidence": bool(
+                execute_repository_checks
+                and tasks
+                and not errors
+                and all(not item["local_fixture"] for item in tasks)
+                and all(item["base_checked"] and item["reference_checked"] for item in tasks)
+            ),
         },
         "errors": errors,
         "warnings": warnings,
@@ -715,6 +946,121 @@ def _git_changed_paths(workdir: str | Path) -> list[str]:
     return sorted(set(paths))
 
 
+def _git_diff_paths(workdir: str | Path) -> list[str]:
+    result = subprocess.run(
+        ["git", "diff", "--name-only"],
+        cwd=str(workdir),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+    return sorted({_normal_path(path.strip()) for path in result.stdout.splitlines() if path.strip()})
+
+
+def _git_diff(workdir: str | Path, base: str, reference: str) -> bytes:
+    result = subprocess.run(
+        ["git", "diff", base, reference],
+        cwd=str(workdir),
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ExternalTaskError(f"cannot calculate reference diff for {reference}")
+    return result.stdout
+
+
+def _reference_commit(task: ExternalTaskSpec) -> str | None:
+    value = task.reference.get("reference_commit", task.reference.get("commit"))
+    if value is None:
+        return None
+    if not isinstance(value, str) or not _is_commit(value.lower()):
+        raise ExternalTaskError(f"reference commit must be a 40-char lowercase SHA: {task.id}")
+    return value.lower()
+
+
+def _reference_patch_path(task: ExternalTaskSpec) -> Path | None:
+    raw = task.reference.get("patch_path", task.reference.get("patch_file"))
+    if raw is None and isinstance(task.reference.get("patch"), str):
+        raw = task.reference["patch"]
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw.strip():
+        raise ExternalTaskError(f"reference patch path must be a non-empty string: {task.id}")
+    root = task.manifest_root.resolve()
+    path = (root / raw).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise ExternalTaskError(f"reference patch path escapes the dataset root: {task.id}") from exc
+    if not path.is_file():
+        raise ExternalTaskError(f"reference patch does not exist: {path}")
+    return path
+
+
+def _prepare_reference_workspace(
+    task: ExternalTaskSpec,
+    materializer: RepositoryMaterializer,
+) -> tuple[Path | None, list[str], str | None]:
+    """Materialize a reference commit or apply an immutable patch for auditing."""
+
+    reference_commit = _reference_commit(task)
+    patch_path = _reference_patch_path(task)
+    if reference_commit and patch_path:
+        raise ExternalTaskError(f"reference must provide commit or patch, not both: {task.id}")
+    if reference_commit:
+        workspace = materializer.materialize(task, commit=reference_commit)
+        patch = _git_diff(workspace, task.base_commit, reference_commit)
+        return workspace, _git_diff_paths_at_revision(workspace, task.base_commit, reference_commit), sha256_bytes(patch)
+    if patch_path:
+        workspace = materializer.materialize(task)
+        patch_bytes = patch_path.read_bytes()
+        if sha256_bytes(patch_bytes) != task.reference["patch_sha256"]:
+            shutil.rmtree(workspace, ignore_errors=True)
+            raise ExternalTaskError(f"reference patch hash mismatch: {task.id}")
+        check = subprocess.run(
+            ["git", "apply", "--check", str(patch_path)],
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if check.returncode != 0:
+            shutil.rmtree(workspace, ignore_errors=True)
+            raise ExternalTaskError(f"reference patch cannot be applied for {task.id}: {check.stderr[-500:]}")
+        applied = subprocess.run(
+            ["git", "apply", str(patch_path)],
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if applied.returncode != 0:
+            shutil.rmtree(workspace, ignore_errors=True)
+            raise ExternalTaskError(f"reference patch application failed for {task.id}: {applied.stderr[-500:]}")
+        return workspace, _git_diff_paths(workspace), sha256_bytes(patch_bytes)
+    return None, [], None
+
+
+def _git_diff_paths_at_revision(workdir: str | Path, base: str, reference: str) -> list[str]:
+    result = subprocess.run(
+        ["git", "diff", "--name-only", base, reference],
+        cwd=str(workdir),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ExternalTaskError(f"cannot list reference changed paths for {reference}")
+    return sorted({_normal_path(path.strip()) for path in result.stdout.splitlines() if path.strip()})
+
+
 def _current_git_commit() -> str | None:
     root = Path(__file__).resolve().parents[1]
     result = subprocess.run(
@@ -726,6 +1072,80 @@ def _current_git_commit() -> str | None:
         check=False,
     )
     return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _current_git_dirty() -> bool | None:
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=str(root),
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    return None if result.returncode != 0 else bool(result.stdout.strip())
+
+
+def dependency_lock_sha256(root: str | Path | None = None) -> str | None:
+    """Hash the repository dependency lock without reading credentials."""
+
+    base = Path(root).resolve() if root is not None else Path(__file__).resolve().parents[1]
+    lock = base / "requirements.lock"
+    return sha256_file(lock) if lock.is_file() else None
+
+
+def _redact_metadata(value: Any) -> Any:
+    if isinstance(value, dict):
+        safe: dict[str, Any] = {}
+        for key, item in value.items():
+            lowered = str(key).lower()
+            if any(marker in lowered for marker in ("key", "token", "secret", "password", "credential")):
+                safe[str(key)] = "<redacted>"
+            else:
+                safe[str(key)] = _redact_metadata(item)
+        return safe
+    if isinstance(value, (list, tuple)):
+        return [_redact_metadata(item) for item in value]
+    return value
+
+
+def execution_metadata(
+    cfg: Any,
+    *,
+    model_name: str | None = None,
+    model_provider: str | None = None,
+    model_version: str | None = None,
+    config_metadata: dict[str, Any] | None = None,
+    dataset_lock_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Return reproducibility metadata with credential-shaped values redacted."""
+
+    base_url = str(getattr(cfg, "base_url", ""))
+    parsed = urlparse(base_url)
+    provider = model_provider or parsed.netloc or (parsed.scheme if parsed.scheme else None)
+    model = model_name or str(getattr(cfg, "model", ""))
+    return {
+        "agentforge_commit": _current_git_commit(),
+        "agentforge_dirty": _current_git_dirty(),
+        "python": sys.version,
+        "platform": platform.platform(),
+        "provider": provider,
+        "model": model,
+        "model_version": model_version or model,
+        "sandbox": {
+            "backend": getattr(cfg, "sandbox_backend", None),
+            "image": getattr(cfg, "sandbox_image", None),
+            "network": getattr(cfg, "sandbox_network", None),
+            "cpu_limit": getattr(cfg, "sandbox_cpu_limit", None),
+            "memory_limit_mb": getattr(cfg, "sandbox_memory_limit_mb", None),
+            "pids_limit": getattr(cfg, "sandbox_pids_limit", None),
+            "disk_limit_mb": getattr(cfg, "sandbox_disk_limit_mb", None),
+        },
+        "dependency_lock_sha256": dependency_lock_sha256(),
+        "dataset_lock_sha256": dataset_lock_sha256,
+        "config": _redact_metadata(config_metadata or {}),
+    }
 
 
 def run_external_episode(
@@ -740,9 +1160,12 @@ def run_external_episode(
     model_name: str | None = None,
     config_id: str = "custom",
     config_metadata: dict[str, Any] | None = None,
+    model_provider: str | None = None,
+    model_version: str | None = None,
     trial: int = 0,
     seed: int = 0,
     dataset_sha256: str | None = None,
+    dataset_lock_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Run one external episode while preserving verifier/path metadata.
 
@@ -774,19 +1197,36 @@ def run_external_episode(
         allowed, violations = task.changed_paths_allowed(changed)
         verifier_result = task.verifier.run(workdir, task_id=task.id)
         reward = int(result.reward and allowed and verifier_result.passed)
+        run_metadata = execution_metadata(
+            cfg,
+            model_name=model_name,
+            model_provider=model_provider,
+            model_version=model_version,
+            config_metadata=config_metadata,
+            dataset_lock_sha256=dataset_lock_sha256,
+        )
         episode = {
             "task": task.id,
             "dataset_version": task.dataset_version,
             "dataset_sha256": dataset_sha256 or task.manifest_sha256,
             "split": task.split,
             "model": model_name or str(getattr(cfg, "model", "")),
+            "provider": run_metadata["provider"],
+            "model_version": run_metadata["model_version"],
             "config": config_id,
-            "config_metadata": dict(config_metadata or {}),
+            "config_metadata": _redact_metadata(dict(config_metadata or {})),
             "trial": trial,
             "seed": seed,
             "git_commit": _current_git_commit(),
+            "agentforge_commit": run_metadata["agentforge_commit"],
+            "agentforge_dirty": run_metadata["agentforge_dirty"],
             "python": sys.version,
             "platform": platform.platform(),
+            "sandbox_backend": run_metadata["sandbox"]["backend"],
+            "sandbox_image": run_metadata["sandbox"]["image"],
+            "dependency_lock_sha256": run_metadata["dependency_lock_sha256"],
+            "dataset_lock_sha256": dataset_lock_sha256,
+            "execution": run_metadata,
             "category": task.category,
             "repository": task.repository_url,
             "base_commit": task.base_commit,

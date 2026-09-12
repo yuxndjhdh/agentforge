@@ -15,12 +15,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from agentforge.external_tasks import ExternalDataset, ExternalTaskError, sha256_bytes
+from agentforge.external_tasks import (
+    ExternalDataset,
+    ExternalTaskError,
+    atomic_write_json,
+    sha256_bytes,
+    write_dataset_lock,
+)
 
 
 def _write_json(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    atomic_write_json(path, value)
 
 
 def prepare_dataset(source: str | Path, destination: str | Path) -> dict[str, object]:
@@ -58,12 +63,16 @@ def prepare_dataset(source: str | Path, destination: str | Path) -> dict[str, ob
     )
     manifest_hash = sha256_bytes(json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
     (destination_path / "manifest.sha256").write_text(manifest_hash + "\n", encoding="ascii")
+    frozen = ExternalDataset.load(destination_path)
+    write_dataset_lock(frozen, destination_path / "dataset.lock.json")
     return {
         "dataset_version": dataset.version,
         "tasks": len(dataset.tasks),
         "validation": len(dataset.by_split("validation")),
         "holdout": len(dataset.by_split("holdout")),
         "manifest_sha256": manifest_hash,
+        "dataset_sha256": frozen.dataset_sha256,
+        "lock": str(destination_path / "dataset.lock.json"),
         "destination": str(destination_path),
     }
 
